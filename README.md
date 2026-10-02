@@ -22,6 +22,15 @@
 - Linux ≥ 5.2（`inet` 表中的 NAT），`nft`；删除时如需断开已有连接，还需要 conntrack-tools ≥ 1.4.5
 - 运行权限：root 或 `CAP_NET_ADMIN`；容器部署需要 host 网络
 
+## 可移植性
+
+- `CGO_ENABLED=0` 编译出的是完全静态的二进制，不依赖 libc：在 Alpine（musl）上编译，可以直接在 Debian/Ubuntu/RHEL 等 glibc 发行版上运行，反过来也一样。SQLite 用的是纯 Go 驱动 `modernc.org/sqlite`。
+- 发行版本身没有限制，真正的运行时依赖只有两个：
+  - **内核** ≥ 5.2，并启用 nf_tables、nft_nat/nft_redir、nf_conntrack；
+  - **用户态命令** `nft`，以及删除时带 `?kill=true` 才会用到的 `conntrack`（≥ 1.4.5）。
+- 支持 amd64、arm64 等 Go 支持的架构，交叉编译即可，例如 `GOARCH=arm64`。
+- `deploy/xgate.service` 适用于 systemd 发行版；Alpine 等使用 OpenRC 的系统需要自己编写服务脚本，启动命令同样是 `xgate serve -config …`。
+
 ## 安装
 
 ```bash
