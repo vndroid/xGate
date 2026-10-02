@@ -1,0 +1,36 @@
+[Unit]
+Description=xGate CIDR allowlist port forwarder (control plane)
+Documentation=https://github.com/vndroid/xGate
+# 排在 nftables.service 之后，避免它的 "flush ruleset" 清掉 xgate 表。
+# 启动时 xgate 会在一个 nft 事务里加载规则并恢复白名单，之后才开放 API。
+After=network-pre.target nftables.service
+Wants=network-pre.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xgate serve -config /etc/xgate/config.yaml
+# 停止或重启只影响控制面，内核规则保持不变，转发不中断。
+Restart=on-failure
+RestartSec=2s
+
+StateDirectory=xgate
+StateDirectoryMode=0750
+RuntimeDirectory=xgate
+RuntimeDirectoryPreserve=yes
+
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

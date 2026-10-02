@@ -1,0 +1,14 @@
+.DS_Store
+.idea/
+.claude/
+/xgate
+*.db
+*.db-*
+# 隐私文件：本地配置、证书、密钥、token
+/config.yaml
+*.pem
+*.key
+*.crt
+token
+*.token
+.env*

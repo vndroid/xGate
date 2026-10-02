@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f
+# 参考规则：仅供阅读和手动排障。
+# 实际规则由 xgate 根据配置渲染（`xgate render` 可查看），
+# 每次同步都在一个事务里重建整张表并写入白名单。
+
+table inet xgate {}
+delete table inet xgate
+table inet xgate {
+	set allow_v4 {
+		type ipv4_addr; flags interval, timeout;
+	}
+	set allow_v6 {
+		type ipv6_addr; flags interval, timeout;
+	}
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		ip saddr @allow_v4 meta l4proto { tcp, udp } th dport 35353 redirect to :8080 comment "default"
+		ip6 saddr @allow_v6 meta l4proto { tcp, udp } th dport 35353 redirect to :8080 comment "default"
+	}
+	chain input {
+		type filter hook input priority filter; policy accept;
+		meta l4proto { tcp, udp } th dport 8080 ct status dnat accept
+		meta l4proto { tcp, udp } th dport 8080 iifname != "lo" drop
+		meta l4proto { tcp, udp } th dport 35353 drop
+	}
+}
