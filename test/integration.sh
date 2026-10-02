@@ -71,9 +71,11 @@ forwards:
 EOF
 
 start_xgate() {
-	srv "$XGATE" serve -config "$WORK/config.yaml" >>"$WORK/xgate.log" 2>&1 &
+	# 直接后台运行 ip（它会 exec 成 xgate），保证 $! 就是 xgate 的 PID。
+	ip netns exec $SRV "$XGATE" serve -config "$WORK/config.yaml" >>"$WORK/xgate.log" 2>&1 &
 	XGATE_PID=$!
 	for _ in $(seq 50); do
+		kill -0 "$XGATE_PID" 2>/dev/null || break
 		srv curl -sf $API/healthz >/dev/null && return
 		sleep 0.1
 	done
@@ -87,7 +89,8 @@ api() { srv curl -s -X "$1" "$API$2" ${3:+-d "$3"} -H 'X-Xgate-Actor: integratio
 # --- 断言工具 ---------------------------------------------------------------
 PASS=0 FAIL=0
 tcp_probe() { cli timeout 3 socat -T2 - "TCP:$1:$2,bind=$3,connect-timeout=2" </dev/null 2>/dev/null; }
-udp_probe() { echo hi | cli timeout 3 socat -T2 - "UDP:$1:$2,bind=$3" 2>/dev/null; }
+# 只取第一行：部分 socat 版本在 stdin EOF 时会再发一个空 UDP 包，导致后端回复两次。
+udp_probe() { echo hi | cli timeout 3 socat -T2 - "UDP:$1:$2,bind=$3" 2>/dev/null | head -n1; }
 
 check() { # check <描述> <期望输出或空表示应失败> <命令...>
 	local desc=$1 want=$2 got
@@ -130,11 +133,13 @@ check "ttl entry: blocked after expiry" "" tcp_probe $SRV4 35353 $CLI4B
 kill "$XGATE_PID"
 wait "$XGATE_PID" 2>/dev/null || true
 XGATE_PID=
+api_down() { if srv curl -sf $API/healthz >/dev/null; then echo up; else echo down; fi; }
+check "control plane stopped: api is down" "down" api_down
 check "control plane stopped: forwarding continues" "tcp-ok" tcp_probe $SRV4 35353 $CLI4
 start_xgate
 check "control plane restarted: allowlist restored" "tcp-ok" tcp_probe $SRV4 35353 $CLI4
 
-udp_probe $SRV4 35353 $CLI4 >/dev/null
+udp_probe $SRV4 35353 $CLI4 >/dev/null || true # 只为生成一条 conntrack 记录
 ct_tracked() { # 输出 yes/no：是否存在来自 CLI4、目的端口 35353 的 udp 连接记录
 	if srv conntrack -L -p udp -s $CLI4 --orig-port-dst 35353 2>/dev/null | grep -q .; then echo yes; else echo no; fi
 }
