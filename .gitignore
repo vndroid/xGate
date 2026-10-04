@@ -12,3 +12,4 @@
 token
 *.token
 .env*
+/out/

@@ -1,0 +1,9 @@
+# SSH 场景测试用配置：2222 → sshd:22。
+# 对账间隔调到 5s，让长连接经历尽可能多次的整表重建。
+db: /var/lib/xgate/xgate.db
+reconcile_interval: 5s
+forwards:
+  - name: ssh
+    listen_port: 2222
+    target_port: 22
+    protocols: [tcp]
