@@ -33,6 +33,8 @@
 
 ## 安装
 
+[Releases](https://github.com/vndroid/xGate/releases) 页面提供 linux/amd64 和 linux/arm64 的静态二进制，以及 `SHA256SUMS`。推送 `vX.Y.Z` tag 会自动触发 [release workflow](.github/workflows/release.yml)：先跑测试，再编译并上传。也可以自己编译：
+
 ```bash
 CGO_ENABLED=0 go build -ldflags "-X main.version=$(git describe --always)" -o xgate ./cmd/xgate
 install -m 0755 xgate /usr/local/bin/xgate
