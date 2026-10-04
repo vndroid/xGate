@@ -75,7 +75,8 @@ curl -s -X DELETE 'localhost:7070/v1/allowlist/198.51.100.0%2F24?kill=true'
 
 - `redirect` 会把目标地址改成入口网卡的主地址，所以后端要监听 `0.0.0.0` 或 `::`。
 - 本机发起的连接不经过 prerouting，不会被转发。
-- `nftables.service` reload 时如果执行 `flush ruleset`，会清掉 xgate 表，最多一个对账周期后自动恢复。
+- **不要对运行中的机器执行 `nft flush ruleset`。** 新连接的转发最多一个对账周期后会自动恢复，但**正在传输数据的已建立连接会被断开**：已有连接的 NAT 映射保存在 conntrack 里，但内核只在本网络命名空间里还存在 nat 类型链时才会做地址转换。flush 删除所有 nat 链之后，直到对账恢复规则之前，这些连接的包得不到转换，会收到 RST。空闲连接如果在这段时间里没有收发数据，则不受影响。手动 `nft delete table inet xgate` 也一样，除非本机还有其它 nat 链（例如 Docker）。xgate 自己的同步是原子替换，不会出现这个空窗。
+  - Debian 默认的 `/etc/nftables.conf` 第一行就是 `flush ruleset`，`systemctl reload/restart nftables` 会触发上述问题。建议改成只清理自己的表，例如把 `flush ruleset` 换成 `table inet filter {}` 加 `flush table inet filter`。
 - 高并发 UDP 时注意 `nf_conntrack_max` 和 UDP 超时设置。
 - 停止 xgate 不会删除内核规则；要彻底移除，执行 `nft delete table inet xgate`。
 
