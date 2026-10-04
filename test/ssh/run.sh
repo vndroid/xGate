@@ -166,15 +166,30 @@ check "new ssh blocked after delete" "" ssh_to $CLI 2222 -- echo ok
 wait "${BG[keep]}"
 check "existing session continued after delete" "0 done" echo "$(rc_of keep) $(last_line keep)"
 
-log "delete with kill=true: existing session should drop"
-api POST /v1/allowlist "{\"cidr\":\"$CLI_IP\"}" >/dev/null
-bg_session killed $CLI 2222 -o ServerAliveInterval=2 -o ServerAliveCountMax=3 -- "$(loop_cmd 60 1)"
-sleep 5
-t0=$(date +%s)
-api DELETE "/v1/allowlist/$CLI_IP%2F32?kill=true" >"$WORK/kill.json"
-wait "${BG[killed]}"
-log "     session ended $(($(date +%s) - t0))s after delete, killed_connections=$(grep -o '"killed_connections": [0-9]*' "$WORK/kill.json" | grep -o '[0-9]*$')"
-check "session dropped by kill (ssh exit 255)" "255" rc_of killed
+# 关闭客户端心跳：断开必须来自 xgate 主动发出的 RST，而不是客户端自己超时。
+NO_ALIVE=(-o ServerAliveInterval=0 -o TCPKeepAlive=no)
+sshd_conns() { docker exec $SRV ss -Htn state established dst $CLI_IP "( sport = :22 )" | grep -c . || true; }
+ended_within() { # ended_within <名字> <秒>
+	for _ in $(seq $(($2 * 10))); do [[ -f $WORK/$1.rc ]] && { echo ended; return; }; sleep 0.1; done
+	echo "still open"
+}
+for kind in idle active; do
+	log "delete with kill=true: $kind session should be reset on both ends"
+	api POST /v1/allowlist "{\"cidr\":\"$CLI_IP\"}" >/dev/null
+	if [[ $kind == idle ]]; then
+		bg_session "kill_$kind" $CLI 2222 "${NO_ALIVE[@]}" -- "sleep 120"
+	else
+		bg_session "kill_$kind" $CLI 2222 "${NO_ALIVE[@]}" -- "$(loop_cmd 120 1)"
+	fi
+	sleep 3
+	check "$kind: sshd connection established" "1" sshd_conns
+	api DELETE "/v1/allowlist/$CLI_IP%2F32?kill=true" >"$WORK/kill.json"
+	log "     $(tr -d '\n ' <"$WORK/kill.json" | grep -oE '"(reset_sockets|killed_connections)":[0-9]+' | tr '\n' ' ')"
+	check "$kind: client disconnected within 3s" "ended" ended_within "kill_$kind" 3
+	check "$kind: ssh exited with connection reset" "255" rc_of "kill_$kind"
+	check "$kind: sshd connection closed" "0" sshd_conns
+	wait "${BG[kill_$kind]}"
+done
 
 log "ttl: entry expires while a session is open"
 api POST /v1/allowlist "{\"cidr\":\"$CLI_IP\",\"ttl\":\"15s\"}" >/dev/null

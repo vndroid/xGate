@@ -19,6 +19,7 @@ type Config struct {
 	DB                string        `yaml:"db"`
 	NFT               NFT           `yaml:"nft"`
 	Conntrack         Conntrack     `yaml:"conntrack"`
+	SS                SS            `yaml:"ss"`
 	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
 	MinPrefixLen      MinPrefixLen  `yaml:"min_prefix_len"`
 	Forwards          []Forward     `yaml:"forwards"`
@@ -47,6 +48,11 @@ type Conntrack struct {
 	Binary string `yaml:"binary"`
 }
 
+// SS 是 iproute2 的 ss，删除白名单并断开连接时用来销毁后端 socket。
+type SS struct {
+	Binary string `yaml:"binary"`
+}
+
 // MinPrefixLen 规定不加 force 时允许的最短前缀，用来挡住 0.0.0.0/0 这类过宽网段。
 type MinPrefixLen struct {
 	IPv4 int `yaml:"ipv4"`
@@ -71,6 +77,7 @@ func Default() Config {
 		DB:                "/var/lib/xgate/xgate.db",
 		NFT:               NFT{Binary: "nft", Table: "xgate"},
 		Conntrack:         Conntrack{Binary: "conntrack"},
+		SS:                SS{Binary: "ss"},
 		ReconcileInterval: 30 * time.Second,
 		MinPrefixLen:      MinPrefixLen{IPv4: 8, IPv6: 32},
 	}

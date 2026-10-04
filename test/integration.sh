@@ -60,6 +60,9 @@ srv socat TCP6-LISTEN:8080,ipv6only=0,reuseaddr,fork SYSTEM:'echo tcp-ok' &
 PIDS+=($!)
 srv socat UDP6-RECVFROM:8080,ipv6only=0,reuseaddr,fork SYSTEM:'echo udp-ok' &
 PIDS+=($!)
+# 长连接后端（8081）：接受连接后保持空闲，用来验证删除时主动断开。
+srv socat TCP6-LISTEN:8081,ipv6only=0,reuseaddr,fork SYSTEM:'sleep 120' &
+PIDS+=($!)
 
 # --- xgate ------------------------------------------------------------------
 cat >"$WORK/config.yaml" <<EOF
@@ -68,6 +71,7 @@ db: $WORK/xgate.db
 reconcile_interval: 2s
 forwards:
   - {name: default, listen_port: 35353, target_port: 8080, protocols: [tcp, udp]}
+  - {name: hold, listen_port: 35354, target_port: 8081, protocols: [tcp]}
 EOF
 
 start_xgate() {
@@ -139,6 +143,20 @@ check "control plane stopped: forwarding continues" "tcp-ok" tcp_probe $SRV4 353
 start_xgate
 check "control plane restarted: allowlist restored" "tcp-ok" tcp_probe $SRV4 35353 $CLI4
 
+# 删除时带 kill：空闲的长连接两端都应立即断开，而不只是不再转发。
+hold_open() { # hold_open <名字> <服务端地址> <源地址>：后台打开一条空闲的长连接
+	( rc=0; cli timeout 60 socat -u "TCP:$2:35354,bind=$3" - >/dev/null 2>&1 || rc=$?; echo $rc >"$WORK/$1.rc" ) &
+}
+hold_closed() { # 3 秒内客户端是否已经断开
+	for _ in $(seq 30); do [[ -f $WORK/$1.rc ]] && { echo closed; return; }; sleep 0.1; done
+	echo open
+}
+# 地址必须带前缀长度：ss 会把裸 IPv6 地址末尾的 ":2" 当成端口。
+backend_conns() { srv ss -Htn state established dst "$1" "( sport = :8081 )" | grep -c . || true; }
+
+hold_open hold4 $SRV4 $CLI4
+sleep 1
+check "long-lived tcp connection established" "1" backend_conns $CLI4/32
 udp_probe $SRV4 35353 $CLI4 >/dev/null || true # 只为生成一条 conntrack 记录
 ct_tracked() { # 输出 yes/no：是否存在来自 CLI4、目的端口 35353 的 udp 连接记录
 	if srv conntrack -L -p udp -s $CLI4 --orig-port-dst 35353 2>/dev/null | grep -q .; then echo yes; else echo no; fi
@@ -146,10 +164,19 @@ ct_tracked() { # 输出 yes/no：是否存在来自 CLI4、目的端口 35353 �
 check "udp flow tracked before delete" "yes" ct_tracked
 api DELETE "/v1/allowlist/$CLI4%2F32?kill=true" >/dev/null
 check "delete with kill: conntrack entries removed" "no" ct_tracked
+check "delete with kill: client side reset" "closed" hold_closed hold4
+check "delete with kill: backend socket closed" "0" backend_conns $CLI4/32
 check "deleted: tcp blocked" "" tcp_probe $SRV4 35353 $CLI4
 
+hold_open hold6 "[$SRV6]" "[$CLI6]"
+sleep 1
+check "ipv6 long-lived tcp connection established" "1" backend_conns $CLI6/128
+api DELETE "/v1/allowlist/$CLI6%2F128?kill=true" >/dev/null
+check "ipv6 delete with kill: client side reset" "closed" hold_closed hold6
+check "ipv6 delete with kill: backend socket closed" "0" backend_conns $CLI6/128
+
 audit_deletes() { api GET "/v1/audit?limit=100" | grep -c '"action": "delete"'; }
-check "audit log recorded the delete" "1" audit_deletes
+check "audit log recorded the deletes" "2" audit_deletes
 
 echo
 echo "passed: $PASS, failed: $FAIL"

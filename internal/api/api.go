@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/vndroid/xGate/internal/config"
 	"github.com/vndroid/xGate/internal/conntrack"
 	"github.com/vndroid/xGate/internal/reconcile"
+	"github.com/vndroid/xGate/internal/sockets"
 	"github.com/vndroid/xGate/internal/store"
 )
 
@@ -25,6 +27,7 @@ type Server struct {
 	Store     *store.Store
 	Rec       *reconcile.Reconciler
 	Killer    conntrack.Killer
+	Sockets   sockets.Destroyer
 	Forwards  []config.Forward
 	MinPrefix config.MinPrefixLen
 	Token     string
@@ -213,10 +216,15 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if kill {
-		n, errs := s.killFlows(r.Context(), p, now)
-		resp["killed_connections"] = n
-		if len(errs) > 0 {
-			resp["error"] = "removed from allowlist, but clearing conntrack failed: " + strings.Join(errs, "; ")
+		res := s.killFlows(r.Context(), p, now)
+		resp["reset_sockets"] = res.resetSockets
+		resp["killed_connections"] = res.conntrackEntries
+		if len(res.warnings) > 0 {
+			resp["warnings"] = res.warnings
+			s.Log.Warn("connections were not reset, they only stop forwarding", "cidr", p.String(), "warnings", res.warnings)
+		}
+		if len(res.errs) > 0 {
+			resp["error"] = "removed from allowlist, but clearing conntrack failed: " + strings.Join(res.errs, "; ")
 			writeJSON(w, http.StatusInternalServerError, resp)
 			return
 		}
@@ -224,30 +232,62 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// killFlows 清理 p 中、且不再被其它白名单覆盖的地址上的连接。
-func (s *Server) killFlows(ctx context.Context, p netip.Prefix, now time.Time) (int, []string) {
+type killResult struct {
+	resetSockets     int      // 被销毁（两端都收到 RST）的 TCP 连接数
+	conntrackEntries int      // 被删除的 conntrack 记录数
+	warnings         []string // 未能主动断开，连接只是不再被转发
+	errs             []string // conntrack 清理失败
+}
+
+// killFlows 断开 p 中、且不再被其它白名单覆盖的地址上的已有连接：
+//  1. 销毁本机后端上的 TCP socket，两端立即收到 RST。此时 conntrack 里的 NAT
+//     映射还在，发给客户端的 RST 会被转换回监听端口，客户端才能识别。
+//  2. 再删除 conntrack 记录，覆盖 UDP 以及未能销毁的连接，使其后续报文不再被转发。
+func (s *Server) killFlows(ctx context.Context, p netip.Prefix, now time.Time) killResult {
+	var res killResult
 	remaining, err := s.Store.Active(ctx, now)
 	if err != nil {
-		return 0, []string{err.Error()}
+		res.errs = append(res.errs, err.Error())
+		return res
 	}
 	holes := make([]netip.Prefix, len(remaining))
 	for i, e := range remaining {
 		holes[i] = e.Prefix
 	}
-	total := 0
-	var errs []string
-	for _, region := range cidr.Subtract(p, holes) {
+	regions := cidr.Subtract(p, holes)
+
+	type target struct {
+		peer netip.Prefix
+		port uint16
+	}
+	done := map[target]bool{}
+	for _, region := range regions {
+		for _, f := range s.Forwards {
+			t := target{region, f.TargetPort}
+			if done[t] || !slices.Contains(f.Protocols, "tcp") {
+				continue
+			}
+			done[t] = true
+			n, err := s.Sockets.Destroy(ctx, region, f.TargetPort)
+			res.resetSockets += n
+			if err != nil {
+				res.warnings = append(res.warnings, err.Error())
+			}
+		}
+	}
+
+	for _, region := range regions {
 		for _, f := range s.Forwards {
 			for _, proto := range f.Protocols {
 				n, err := s.Killer.Kill(ctx, conntrack.Flow{Src: region, Proto: proto, DPort: f.ListenPort})
-				total += n
+				res.conntrackEntries += n
 				if err != nil {
-					errs = append(errs, err.Error())
+					res.errs = append(res.errs, err.Error())
 				}
 			}
 		}
 	}
-	return total, errs
+	return res
 }
 
 // syncAfterChange 在变更后立即同步内核。失败时写出 500 响应并返回 false；

@@ -22,6 +22,7 @@ import (
 	"github.com/vndroid/xGate/internal/conntrack"
 	"github.com/vndroid/xGate/internal/nft"
 	"github.com/vndroid/xGate/internal/reconcile"
+	"github.com/vndroid/xGate/internal/sockets"
 	"github.com/vndroid/xGate/internal/store"
 )
 
@@ -134,6 +135,7 @@ func serve(args []string) error {
 			Store:     d.store,
 			Rec:       d.rec,
 			Killer:    conntrack.CmdKiller{Binary: cfg.Conntrack.Binary},
+			Sockets:   sockets.CmdDestroyer{Binary: cfg.SS.Binary},
 			Forwards:  cfg.Forwards,
 			MinPrefix: cfg.MinPrefixLen,
 			Token:     cfg.API.Token,

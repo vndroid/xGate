@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -35,18 +37,30 @@ func (f *fakeNFT) Apply(_ context.Context, s string) error {
 	return f.err
 }
 
-type fakeKiller struct{ flows []conntrack.Flow }
+// fakeKiller 同时实现 conntrack.Killer 和 sockets.Destroyer，按调用顺序记录到 calls。
+type fakeKiller struct {
+	flows      []conntrack.Flow
+	calls      []string
+	destroyErr error
+}
 
 func (k *fakeKiller) Kill(_ context.Context, f conntrack.Flow) (int, error) {
 	k.flows = append(k.flows, f)
+	k.calls = append(k.calls, fmt.Sprintf("conntrack %s %s %d", f.Src, f.Proto, f.DPort))
 	return 1, nil
 }
 
+func (k *fakeKiller) Destroy(_ context.Context, peer netip.Prefix, port uint16) (int, error) {
+	k.calls = append(k.calls, fmt.Sprintf("destroy %s %d", peer, port))
+	return 3, k.destroyErr
+}
+
 type env struct {
-	srv    *httptest.Server
-	nft    *fakeNFT
-	killer *fakeKiller
-	now    time.Time
+	srv        *httptest.Server
+	srvHandler *Server
+	nft        *fakeNFT
+	killer     *fakeKiller
+	now        time.Time
 }
 
 func setup(t *testing.T, token string) *env {
@@ -63,10 +77,10 @@ func setup(t *testing.T, token string) *env {
 	rec := reconcile.New(st, e.nft, nft.Ruleset{Table: "xgate", Forwards: fwd}, time.Minute, log)
 	rec.Now = clock
 	s := &Server{
-		Store: st, Rec: rec, Killer: e.killer, Forwards: fwd,
+		Store: st, Rec: rec, Killer: e.killer, Sockets: e.killer, Forwards: fwd,
 		MinPrefix: config.MinPrefixLen{IPv4: 8, IPv6: 32}, Token: token, Log: log, Now: clock,
 	}
-	e.srv = httptest.NewServer(s.Handler())
+	e.srv, e.srvHandler = httptest.NewServer(s.Handler()), s
 	t.Cleanup(e.srv.Close)
 	return e
 }
@@ -160,8 +174,17 @@ func TestDeleteKillsOnlyUncoveredFlows(t *testing.T) {
 	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.128/25"}`)
 
 	code, out := e.do(t, "DELETE", "/v1/allowlist/10.0.0.0%2F24?kill=true", "")
-	if code != 200 || out["killed_connections"].(float64) != 2 {
+	if code != 200 || out["killed_connections"].(float64) != 2 || out["reset_sockets"].(float64) != 3 || out["warnings"] != nil {
 		t.Fatalf("delete: %d %v", code, out)
+	}
+	// 先销毁后端 socket（此时 NAT 映射还在，RST 才能回到客户端），再清 conntrack。
+	wantCalls := []string{
+		"destroy 10.0.0.0/25 8080",
+		"conntrack 10.0.0.0/25 tcp 35353",
+		"conntrack 10.0.0.0/25 udp 35353",
+	}
+	if !slices.Equal(e.killer.calls, wantCalls) {
+		t.Errorf("calls = %q, want %q", e.killer.calls, wantCalls)
 	}
 	// 10.0.0.128/25 仍在白名单中，只能清理 10.0.0.0/25 上的连接（tcp、udp 各一次）。
 	want := []conntrack.Flow{
@@ -172,11 +195,35 @@ func TestDeleteKillsOnlyUncoveredFlows(t *testing.T) {
 		t.Errorf("killed flows = %+v", e.killer.flows)
 	}
 
-	e.killer.flows = nil
+	e.killer.flows, e.killer.calls = nil, nil
 	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24"}`)
 	e.do(t, "DELETE", "/v1/allowlist/10.0.0.128%2F25?kill=1", "")
-	if len(e.killer.flows) != 0 {
-		t.Errorf("fully covered prefix should not kill flows: %+v", e.killer.flows)
+	if len(e.killer.calls) != 0 {
+		t.Errorf("fully covered prefix should not kill flows: %q", e.killer.calls)
+	}
+}
+
+func TestDeleteKillWithoutSocketDestroy(t *testing.T) {
+	e := setup(t, "")
+	e.killer.destroyErr = errors.New("2 tcp sockets were not destroyed")
+	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24"}`)
+	// 内核不支持销毁 socket 时仍清理 conntrack，返回 200 并带上警告。
+	code, out := e.do(t, "DELETE", "/v1/allowlist/10.0.0.0%2F24?kill=true", "")
+	if code != 200 || out["killed_connections"].(float64) != 2 {
+		t.Fatalf("delete: %d %v", code, out)
+	}
+	if w, _ := out["warnings"].([]any); len(w) != 1 || !strings.Contains(w[0].(string), "not destroyed") {
+		t.Errorf("warnings = %v", out["warnings"])
+	}
+}
+
+func TestDeleteKillUDPOnlySkipsSocketDestroy(t *testing.T) {
+	e := setup(t, "")
+	e.srvHandler.Forwards = []config.Forward{{Name: "dns", ListenPort: 5353, TargetPort: 53, Protocols: []string{"udp"}}}
+	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24"}`)
+	e.do(t, "DELETE", "/v1/allowlist/10.0.0.0%2F24?kill=true", "")
+	if want := []string{"conntrack 10.0.0.0/24 udp 5353"}; !slices.Equal(e.killer.calls, want) {
+		t.Errorf("calls = %q, want %q", e.killer.calls, want)
 	}
 }
 
