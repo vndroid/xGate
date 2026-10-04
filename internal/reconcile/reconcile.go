@@ -30,7 +30,7 @@ type Reconciler struct {
 	interval time.Duration
 	log      *slog.Logger
 
-	// Now 可在测试中替换。
+	// Now 返回当前时间（UTC），可在测试中替换。
 	Now func() time.Time
 
 	mu     sync.Mutex // 串行化同步，保证内核状态按顺序收敛
@@ -41,7 +41,7 @@ type Reconciler struct {
 func New(st *store.Store, ex nft.Executor, rs nft.Ruleset, interval time.Duration, log *slog.Logger) *Reconciler {
 	return &Reconciler{
 		store: st, nft: ex, ruleset: rs, interval: interval, log: log,
-		Now:  time.Now,
+		Now:  func() time.Time { return time.Now().UTC() },
 		kick: make(chan struct{}, 1),
 	}
 }
@@ -65,7 +65,7 @@ func (r *Reconciler) Script(ctx context.Context) (string, int, int, error) {
 func (r *Reconciler) Sync(ctx context.Context) (Status, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.status.LastAttempt = r.Now()
+	r.status.LastAttempt = r.Now().UTC()
 	script, entries, elems, err := r.Script(ctx)
 	if err == nil {
 		err = r.nft.Apply(ctx, script)

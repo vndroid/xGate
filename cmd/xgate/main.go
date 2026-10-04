@@ -107,7 +107,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: utcTimes}))
 	d, err := build(cfg, log)
 	if err != nil {
 		return err
@@ -175,6 +175,14 @@ func serve(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// utcTimes 把日志里的时间（包括每行的 time 字段）统一转成 UTC。
+func utcTimes(_ []string, a slog.Attr) slog.Attr {
+	if a.Value.Kind() == slog.KindTime {
+		a.Value = slog.TimeValue(a.Value.Time().UTC())
+	}
+	return a
 }
 
 func listen(c config.API) (net.Listener, error) {

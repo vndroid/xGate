@@ -108,6 +108,9 @@ func (s *Store) Upsert(ctx context.Context, e Entry, actor string, now time.Time
 		return Entry{}, false, err
 	}
 	e.UpdatedAt = now.UTC()
+	if !e.ExpiresAt.IsZero() {
+		e.ExpiresAt = e.ExpiresAt.UTC()
+	}
 	if created {
 		e.CreatedAt, e.CreatedBy = now.UTC(), actor
 	} else {

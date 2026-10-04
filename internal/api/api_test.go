@@ -264,3 +264,34 @@ func TestSyncFailureReported(t *testing.T) {
 }
 
 func mustPrefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
+
+func TestTimesAreUTC(t *testing.T) {
+	e := setup(t, "")
+	// 时钟处于非 UTC 时区，输出仍必须统一为 UTC。
+	e.now = time.Date(2026, 10, 2, 20, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	_, add := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24","ttl":"1h"}`)
+	_, list := e.do(t, "GET", "/v1/allowlist", "")
+	_, health := e.do(t, "GET", "/healthz", "")
+	_, audit := e.do(t, "GET", "/v1/audit", "")
+
+	entry := add["entry"].(map[string]any)
+	sync := add["sync"].(map[string]any)
+	got := map[string]any{
+		"entry.created_at":  entry["created_at"],
+		"entry.expires_at":  entry["expires_at"],
+		"sync.last_attempt": sync["last_attempt"],
+		"sync.last_success": sync["last_success"],
+		"list.expires_at":   list["entries"].([]any)[0].(map[string]any)["expires_at"],
+		"health.last_sync":  health["sync"].(map[string]any)["last_success"],
+		"audit.time":        audit["records"].([]any)[0].(map[string]any)["time"],
+	}
+	for name, v := range got {
+		ts, _ := v.(string)
+		if !strings.HasSuffix(ts, "Z") {
+			t.Errorf("%s = %q, want a UTC timestamp", name, ts)
+		}
+	}
+	if entry["expires_at"] != "2026-10-02T13:00:00Z" {
+		t.Errorf("expires_at = %v, want 2026-10-02T13:00:00Z", entry["expires_at"])
+	}
+}

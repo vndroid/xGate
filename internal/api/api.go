@@ -46,11 +46,12 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
+// now 返回当前时间。API 输出的所有时间统一为 UTC。
 func (s *Server) now() time.Time {
 	if s.Now != nil {
-		return s.Now()
+		return s.Now().UTC()
 	}
-	return time.Now()
+	return time.Now().UTC()
 }
 
 func (s *Server) auth(h http.HandlerFunc) http.Handler {
