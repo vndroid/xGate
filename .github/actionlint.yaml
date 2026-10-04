@@ -1,0 +1,6 @@
+# ubuntu-26.04 / ubuntu-26.04-arm are GitHub-hosted runners that are newer
+# than the label list built into actionlint 1.7.x.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm

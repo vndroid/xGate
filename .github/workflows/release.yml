@@ -1,0 +1,244 @@
+name: Release
+
+# Builds xgate for linux/amd64 and linux/arm64 on native runners and uploads
+# the binaries, with a SHA256SUMS file, to the GitHub release of a version
+# tag (vX.Y.Z). The version comes from the tag and is set with
+# -ldflags "-X main.version=<tag>".
+#
+# Pushing a tag vX.Y.Z runs a release. Unit tests, go vet, govulncheck and
+# the netns end-to-end test gate it. Both binaries are built in an Alpine
+# container with CGO disabled, so they are static and run on any Linux libc;
+# each one is checked on Debian (glibc) and Alpine (musl) before upload. A
+# version is released once: when its release already has assets, the run
+# skips publishing. A manual run releases an existing tag the same way; with
+# "force" it replaces the assets of an existing release.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release, e.g. v0.0.1'
+        required: true
+        type: string
+      force:
+        description: 'Replace the assets if the release already exists'
+        type: boolean
+        default: false
+
+# Releases run one at a time and are never cancelled halfway.
+concurrency:
+  group: release-xgate
+  cancel-in-progress: false
+
+env:
+  # The tag to release: the pushed tag, or the one a manual run names.
+  TAG: ${{ inputs.tag || github.ref_name }}
+  BUILD_IMAGE: golang:1.26-alpine3.23
+  TEST_IMAGE: golang:1.26
+
+jobs:
+  prepare:
+    name: Parse Version
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      prerelease: ${{ steps.parse.outputs.prerelease }}
+      sha: ${{ steps.parse.outputs.sha }}
+      publish: ${{ steps.exists.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+      - name: Parse version from the tag
+        id: parse
+        shell: bash
+        run: |
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "Error: '$TAG' is not a version tag (vX.Y.Z)"
+            exit 1
+          fi
+          VERSION=${TAG#v}
+          # pre-releases (vX.Y.Z-rc.1) are not marked as the latest release
+          PRERELEASE=false
+          case "$VERSION" in *-*) PRERELEASE=true ;; esac
+          SHA=$(git rev-parse HEAD)
+          echo "TAG: '${TAG}'"
+          echo "VERSION: '${VERSION}'"
+          echo "PRERELEASE: '${PRERELEASE}'"
+          echo "SHA: '${SHA}'"
+          {
+            echo "version=${VERSION}"
+            echo "prerelease=${PRERELEASE}"
+            echo "sha=${SHA}"
+          } >> "$GITHUB_OUTPUT"
+      # A published version is not overwritten unless a manual run forces it.
+      - name: Check whether the version is already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          if ASSETS=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets | length' 2>/dev/null) && [ "$ASSETS" != "0" ]; then
+            if [ "$FORCE" = "true" ]; then
+              echo "::warning::release ${TAG} exists; replacing its assets (force)"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::release ${TAG} is already published; tag a new version to release"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "release ${TAG} has no assets yet"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Test
+    runs-on: ubuntu-26.04
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Unit tests and go vet
+        run: |
+          docker run --rm -v "$PWD":/src -w /src "$TEST_IMAGE" \
+            sh -c 'go vet ./... && go test -race -count=1 ./...'
+      - name: govulncheck
+        run: |
+          docker run --rm -v "$PWD":/src -w /src "$TEST_IMAGE" \
+            go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      # Real nftables forwarding between two network namespaces.
+      - name: End-to-end test
+        run: |
+          docker run --rm --privileged -v "$PWD":/src -w /src "$TEST_IMAGE" bash -c '
+            apt-get update -qq &&
+            apt-get install -y -qq nftables conntrack socat curl iproute2 >/dev/null &&
+            test/integration.sh'
+
+  build:
+    name: Build (${{ matrix.arch }})
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-26.04
+          - arch: arm64
+            runs-on: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    needs:
+      - prepare
+      - test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Build on Alpine (${{ matrix.arch }})
+        env:
+          BIN: dist/xgate-${{ env.TAG }}-linux-${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          docker run --rm -v "$PWD":/src -w /src \
+            -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=${{ matrix.arch }} \
+            "$BUILD_IMAGE" sh -c "
+              echo \"alpine \$(cat /etc/alpine-release), \$(go version)\" &&
+              go build -trimpath -ldflags '-s -w -X main.version=${TAG}' -o '${BIN}' ./cmd/xgate &&
+              chown $(id -u):$(id -g) '${BIN}'"
+          ls -l dist
+      # Runs the built binary, so a wrong version, architecture or a dynamic
+      # build stops the release before anything is uploaded.
+      - name: Check the binary (${{ matrix.arch }})
+        env:
+          BIN: dist/xgate-${{ env.TAG }}-linux-${{ matrix.arch }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          INFO=$(file "$BIN")
+          echo "$INFO"
+          case "$ARCH" in
+            amd64) WANT_ARCH="x86-64" ;;
+            arm64) WANT_ARCH="ARM aarch64" ;;
+          esac
+          if ! echo "$INFO" | grep -Fq "$WANT_ARCH"; then
+            echo "Error: expected a ${WANT_ARCH} binary"
+            exit 1
+          fi
+          if ! echo "$INFO" | grep -Fq "statically linked"; then
+            echo "Error: expected a statically linked binary"
+            exit 1
+          fi
+          # The same binary must run on glibc and musl.
+          for IMG in debian:stable-slim alpine:3.23; do
+            OUT=$(docker run --rm -v "$PWD/dist":/dist "$IMG" "/dist/$(basename "$BIN")" version)
+            echo "${IMG}: ${OUT}"
+            if [ "$OUT" != "xgate ${TAG}" ]; then
+              echo "Error: expected 'xgate ${TAG}' on ${IMG}"
+              exit 1
+            fi
+          done
+          echo "OK: ${TAG} linux/${ARCH}"
+      - name: Upload binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.arch }}
+          path: dist/xgate-${{ env.TAG }}-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-26.04
+    needs:
+      - prepare
+      - build
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/dist
+          pattern: bin-*
+          merge-multiple: true
+      - name: Checksums
+        working-directory: ${{ runner.temp }}/dist
+        run: |
+          COUNT=$(find . -maxdepth 1 -type f -name 'xgate-*' | wc -l)
+          if [ "$COUNT" != "2" ]; then
+            echo "Error: expected the binaries of 2 architectures, got ${COUNT}"
+            find . -maxdepth 1 -type f
+            exit 1
+          fi
+          chmod +x xgate-*
+          sha256sum xgate-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create or update the release
+        working-directory: ${{ runner.temp }}/dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber xgate-* SHA256SUMS
+          else
+            FLAGS=(--verify-tag --generate-notes --title "xGate ${TAG}")
+            if [ "$PRERELEASE" = "true" ]; then
+              FLAGS+=(--prerelease)
+            fi
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" "${FLAGS[@]}" xgate-* SHA256SUMS
+          fi
+      - name: Inspect the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json name,tagName,isPrerelease,assets \
+            --jq '{name, tagName, isPrerelease, assets: [.assets[].name]}'
