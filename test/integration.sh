@@ -22,7 +22,7 @@ WORK=$(mktemp -d)
 XGATE=${1:-}
 if [[ -z $XGATE ]]; then
 	XGATE=$WORK/xgate
-	(cd "$(dirname "$0")/.." && CGO_ENABLED=0 go build -o "$XGATE" ./cmd/xgate)
+	(cd "$(dirname "$0")/.." && CGO_ENABLED=0 go build -buildvcs=false -o "$XGATE" ./cmd/xgate)
 fi
 XGATE=$(realpath "$XGATE")
 

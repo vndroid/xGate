@@ -36,6 +36,10 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
   BUILD_IMAGE: golang:1.26-alpine3.23
   TEST_IMAGE: golang:1.26
+  # The checkout's .git belongs to the runner user, so git inside the
+  # containers refuses it and VCS stamping fails the build. The version
+  # comes from the tag via -ldflags instead.
+  GOFLAGS: -buildvcs=false
 
 jobs:
   prepare:
@@ -109,16 +113,16 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
       - name: Unit tests and go vet
         run: |
-          docker run --rm -v "$PWD":/src -w /src "$TEST_IMAGE" \
+          docker run --rm -v "$PWD":/src -w /src -e GOFLAGS "$TEST_IMAGE" \
             sh -c 'go vet ./... && go test -race -count=1 ./...'
       - name: govulncheck
         run: |
-          docker run --rm -v "$PWD":/src -w /src "$TEST_IMAGE" \
+          docker run --rm -v "$PWD":/src -w /src -e GOFLAGS "$TEST_IMAGE" \
             go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       # Real nftables forwarding between two network namespaces.
       - name: End-to-end test
         run: |
-          docker run --rm --privileged -v "$PWD":/src -w /src "$TEST_IMAGE" bash -c '
+          docker run --rm --privileged -v "$PWD":/src -w /src -e GOFLAGS "$TEST_IMAGE" bash -c '
             apt-get update -qq &&
             apt-get install -y -qq nftables conntrack socat curl iproute2 >/dev/null &&
             test/integration.sh'
@@ -149,7 +153,7 @@ jobs:
         run: |
           mkdir -p dist
           docker run --rm -v "$PWD":/src -w /src \
-            -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=${{ matrix.arch }} \
+            -e GOFLAGS -e CGO_ENABLED=0 -e GOOS=linux -e GOARCH=${{ matrix.arch }} \
             "$BUILD_IMAGE" sh -c "
               echo \"alpine \$(cat /etc/alpine-release), \$(go version)\" &&
               go build -trimpath -ldflags '-s -w -X main.version=${TAG}' -o '${BIN}' ./cmd/xgate &&
