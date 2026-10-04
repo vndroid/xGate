@@ -16,8 +16,11 @@ nft:
   binary: nft
   table: xgate
 
+# 以下两个命令仅在删除时带 ?kill=true 才会用到
 conntrack:
-  binary: conntrack # 需要 conntrack-tools 1.4.5+，仅在删除时带 ?kill=true 才会用到
+  binary: conntrack # conntrack-tools 1.4.5+
+ss:
+  binary: ss # iproute2；销毁后端 socket，需要内核开启 CONFIG_INET_DIAG_DESTROY
 
 # 定期对账间隔；TTL 到期时会额外触发一次
 reconcile_interval: 30s

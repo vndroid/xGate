@@ -19,7 +19,7 @@
 
 ## 要求
 
-- Linux ≥ 5.2（`inet` 表中的 NAT），`nft`；删除时如需断开已有连接，还需要 conntrack-tools ≥ 1.4.5
+- Linux ≥ 5.2（`inet` 表中的 NAT），`nft`；删除时如需断开已有连接，还需要 conntrack-tools ≥ 1.4.5、iproute2 的 `ss`，以及内核开启 `CONFIG_INET_DIAG_DESTROY`（Debian、Ubuntu 默认开启）
 - 运行权限：root 或 `CAP_NET_ADMIN`；容器部署需要 host 网络
 
 ## 可移植性
@@ -27,7 +27,7 @@
 - `CGO_ENABLED=0` 编译出的是完全静态的二进制，不依赖 libc：在 Alpine（musl）上编译，可以直接在 Debian/Ubuntu/RHEL 等 glibc 发行版上运行，反过来也一样。SQLite 用的是纯 Go 驱动 `modernc.org/sqlite`。
 - 发行版本身没有限制，真正的运行时依赖只有两个：
   - **内核** ≥ 5.2，并启用 nf_tables、nft_nat/nft_redir、nf_conntrack；
-  - **用户态命令** `nft`，以及删除时带 `?kill=true` 才会用到的 `conntrack`（≥ 1.4.5）。
+  - **用户态命令** `nft`，以及删除时带 `?kill=true` 才会用到的 `conntrack`（≥ 1.4.5）和 `ss`。
 - 支持 amd64、arm64 等 Go 支持的架构，交叉编译即可，例如 `GOARCH=arm64`。
 - `deploy/xgate.service` 适用于 systemd 发行版；Alpine 等使用 OpenRC 的系统需要自己编写服务脚本，启动命令同样是 `xgate serve -config …`。
 
@@ -60,7 +60,7 @@ systemctl daemon-reload && systemctl enable --now xgate
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/v1/allowlist` | 新增或更新：`{"cidr":"198.51.100.0/24","comment":"office","ttl":"24h","force":false}`。`ttl` 支持 Go duration 和 `7d`；比 `min_prefix_len` 更宽的网段需要 `"force": true` |
-| `DELETE` | `/v1/allowlist/{cidr}` | 删除，`/` 可以写成 `%2F`。加 `?kill=true` 会同时清理仍未被其它白名单覆盖的地址上的 conntrack 记录，立即断开已有连接 |
+| `DELETE` | `/v1/allowlist/{cidr}` | 删除，`/` 可以写成 `%2F`。加 `?kill=true` 会立即断开仍未被其它白名单覆盖的地址上的已有连接，见下文 |
 | `GET` | `/v1/allowlist` | 列出有效条目 |
 | `POST` | `/v1/allowlist:sync` | 立即与内核对账 |
 | `GET` | `/v1/audit?limit=100` | 最近的审计记录（add / update / delete / expire） |
@@ -70,6 +70,15 @@ systemctl daemon-reload && systemctl enable --now xgate
 curl -s localhost:7070/v1/allowlist -d '{"cidr":"198.51.100.0/24","comment":"office","ttl":"24h"}'
 curl -s -X DELETE 'localhost:7070/v1/allowlist/198.51.100.0%2F24?kill=true'
 ```
+
+### 删除时断开已有连接（`?kill=true`）
+
+不带 kill 时，删除只会拦截新连接；已建立的连接靠 conntrack 里的 NAT 映射继续工作。带上 kill 后：
+
+1. 先用 `ss -K` 销毁本机后端上来自这些地址的 TCP socket，内核会向客户端和后端**各发一个 RST**，空闲连接也会立即断开。这一步必须在清理 conntrack 之前做，RST 才能被转换回监听端口、被客户端识别。
+2. 再清理 conntrack 记录，覆盖 UDP 和剩余连接，使它们的后续报文不再被转发。UDP 没有连接的概念，后端程序本身不会收到通知。
+
+响应中的 `reset_sockets` 是被重置的 TCP 连接数，`killed_connections` 是被删除的 conntrack 记录数。如果内核没有开启 `CONFIG_INET_DIAG_DESTROY`，第 1 步不会生效：连接只会停止转发，两端不会收到通知，响应里会带上 `warnings`。
 
 变更会先写入 SQLite，然后立即同步到内核。如果同步失败，API 返回 500 并说明"已保存"，后台对账会继续重试。
 
