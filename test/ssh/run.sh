@@ -35,7 +35,7 @@ log() { echo "[$(date +%T)] $*"; }
 
 # --- 编译与镜像 -------------------------------------------------------------
 log "build xgate on alpine"
-docker run --rm -v "$ROOT":/src -v xgate-gomod:/go/pkg/mod -w /src -e CGO_ENABLED=0 golang:1.26-alpine3.23 \
+docker run --rm -v "$ROOT":/src -v xgate-gomod:/go/pkg/mod -w /src -e CGO_ENABLED=0 golang:1.27-alpine3.23 \
 	sh -c "echo \"alpine \$(cat /etc/alpine-release), \$(go version)\" && go build -buildvcs=false -trimpath -ldflags '-s -w -X main.version=$VERSION' -o out/xgate ./cmd/xgate && chown -R $(id -u):$(id -g) out"
 file out/xgate 2>/dev/null || true
 log "build debian server image"

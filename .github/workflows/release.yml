@@ -34,8 +34,8 @@ concurrency:
 env:
   # The tag to release: the pushed tag, or the one a manual run names.
   TAG: ${{ inputs.tag || github.ref_name }}
-  BUILD_IMAGE: golang:1.26-alpine3.23
-  TEST_IMAGE: golang:1.26
+  BUILD_IMAGE: golang:1.27-alpine3.23
+  TEST_IMAGE: golang:1.27
   # The checkout's .git belongs to the runner user, so git inside the
   # containers refuses it and VCS stamping fails the build. The version
   # comes from the tag via -ldflags instead.
