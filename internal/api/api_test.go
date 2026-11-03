@@ -282,7 +282,7 @@ func TestTimesAreUTC(t *testing.T) {
 		"sync.last_attempt": sync["last_attempt"],
 		"sync.last_success": sync["last_success"],
 		"list.expires_at":   list["entries"].([]any)[0].(map[string]any)["expires_at"],
-		"health.last_sync":  health["sync"].(map[string]any)["last_success"],
+		"health.last_sync":  health["last_success"],
 		"audit.time":        audit["records"].([]any)[0].(map[string]any)["time"],
 	}
 	for name, v := range got {
@@ -322,5 +322,29 @@ func TestCrossOriginBrowserRequestsRejected(t *testing.T) {
 	// 被拒绝的请求不能写入任何内容：只剩 curl 那次新增。
 	if _, out := e.do(t, "GET", "/v1/audit", ""); len(out["records"].([]any)) != 2 {
 		t.Errorf("audit = %v, want only the curl add and the same-origin update", out)
+	}
+}
+
+func TestHealthzHidesSyncErrors(t *testing.T) {
+	e := setup(t, "s3cret")
+	e.nft.err = errors.New("nft -f -: exit status 1: Error: /etc/nftables/secret.nft")
+	e.do(t, "POST", "/v1/allowlist:sync", "", "Authorization", "Bearer s3cret")
+
+	code, out := e.do(t, "GET", "/healthz", "")
+	if code != http.StatusServiceUnavailable || out["status"] != "degraded" {
+		t.Fatalf("healthz: %d %v", code, out)
+	}
+	for k := range out {
+		if k != "status" && k != "last_success" && k != "entries" && k != "elements" {
+			t.Errorf("healthz exposes %q: %v", k, out)
+		}
+	}
+	// 失败详情只能通过需要鉴权的 /v1/status 查看。
+	if code, _ := e.do(t, "GET", "/v1/status", ""); code != http.StatusUnauthorized {
+		t.Errorf("status without token: %d", code)
+	}
+	_, out = e.do(t, "GET", "/v1/status", "", "Authorization", "Bearer s3cret")
+	if msg, _ := out["sync"].(map[string]any)["last_error"].(string); !strings.Contains(msg, "secret.nft") {
+		t.Errorf("status = %v, want last_error", out)
 	}
 }

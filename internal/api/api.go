@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /v1/allowlist/{cidr...}", s.auth(s.remove))
 	mux.Handle("POST /v1/allowlist:sync", s.auth(s.sync))
 	mux.Handle("GET /v1/audit", s.auth(s.audit))
+	mux.Handle("GET /v1/status", s.auth(s.status))
 
 	// 拒绝浏览器发起的跨站写请求（CSRF）。例如通过 ssh -L 把 API 映射到本机后，
 	// 任意网页都能用 text/plain 的 simple request 向 localhost 发 POST，而回环监听
@@ -116,13 +117,25 @@ func toJSON(e store.Entry, now time.Time) entryJSON {
 	return j
 }
 
+// healthz 不需要鉴权，所以只返回状态和计数；同步错误里可能带有 nft 的 stderr、
+// 文件路径等内部细节，只在需要鉴权的 /v1/status 中返回。
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	st := s.Rec.Status()
 	code, status := http.StatusOK, "ok"
 	if !st.OK() {
 		code, status = http.StatusServiceUnavailable, "degraded"
 	}
-	writeJSON(w, code, map[string]any{"status": status, "sync": st})
+	writeJSON(w, code, map[string]any{
+		"status":       status,
+		"last_success": st.LastSuccess,
+		"entries":      st.Entries,
+		"elements":     st.Elements,
+	})
+}
+
+// status 返回完整的同步状态，包括最近一次失败的原因。
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"sync": s.Rec.Status()})
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {

@@ -121,7 +121,8 @@ ssh -N -L 7070:127.0.0.1:7070 user@server
 | `GET` | `/v1/allowlist` | 列出有效条目 |
 | `POST` | `/v1/allowlist:sync` | 立即与内核对账 |
 | `GET` | `/v1/audit?limit=100` | 最近的审计记录（add / update / delete / expire），`limit` 取 1–1000 |
-| `GET` | `/healthz` | 最近一次同步成功返回 200，否则返回 503；不需要鉴权 |
+| `GET` | `/v1/status` | 完整的同步状态，包括最近一次失败的原因（`last_error`） |
+| `GET` | `/healthz` | 最近一次同步成功返回 200，否则返回 503；不需要鉴权，只返回 `status`、`last_success` 和计数，不含错误详情 |
 
 出错时返回 `{"error": "..."}`：参数错误为 400，鉴权失败为 401，条目不存在为 404，内核同步失败为 500。
 
@@ -184,6 +185,7 @@ curl -s -X DELETE 'localhost:7070/v1/allowlist/198.51.100.0%2F24?kill=true'
 curl -s localhost:7070/v1/allowlist          # {"entries": [...]}，字段同上
 curl -s -X POST localhost:7070/v1/allowlist:sync
 curl -s 'localhost:7070/v1/audit?limit=20'
+curl -s localhost:7070/v1/status             # 同步失败时用它查看 last_error
 curl -s localhost:7070/healthz
 ```
 
