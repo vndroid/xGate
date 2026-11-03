@@ -137,8 +137,12 @@ func (c *Config) Validate() error {
 	if c.ReconcileInterval < time.Second {
 		return errors.New("reconcile_interval must be at least 1s")
 	}
-	if c.MinPrefixLen.IPv4 < 0 || c.MinPrefixLen.IPv4 > 32 || c.MinPrefixLen.IPv6 < 0 || c.MinPrefixLen.IPv6 > 128 {
-		return errors.New("min_prefix_len out of range")
+	// 0 会让"前缀短于下限"的判断恒为假，0.0.0.0/0 不加 force 也能写入，所以至少为 1。
+	if c.MinPrefixLen.IPv4 < 1 || c.MinPrefixLen.IPv4 > 32 {
+		return fmt.Errorf("min_prefix_len.ipv4 must be between 1 and 32, got %d", c.MinPrefixLen.IPv4)
+	}
+	if c.MinPrefixLen.IPv6 < 1 || c.MinPrefixLen.IPv6 > 128 {
+		return fmt.Errorf("min_prefix_len.ipv6 must be between 1 and 128, got %d", c.MinPrefixLen.IPv6)
 	}
 	if c.Limits.MaxEntries < 1 {
 		return errors.New("limits.max_entries must be at least 1")

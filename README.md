@@ -86,7 +86,7 @@ forwards:
 
 - `api.listen`：API 监听地址，见下文。
 - `reconcile_interval`：定期对账间隔，默认 `30s`。
-- `min_prefix_len`：不加 `force` 时允许的最短前缀，默认 IPv4 `/8`、IPv6 `/32`。
+- `min_prefix_len`：不加 `force` 时允许的最短前缀，默认 IPv4 `/8`、IPv6 `/32`；取值范围分别为 1–32 和 1–128，所以 `/0` 总是需要 `force`。
 - `db`：SQLite 路径，默认 `/var/lib/xgate/xgate.db`。
 - `limits.max_entries`：白名单有效条目的上限，默认 `10000`。达到上限后新增会返回 409，已有条目仍可更新。
 - `limits.audit_retention`：审计记录保留时长，默认 `2160h`（90 天），`0` 表示永久保留。超期记录每小时清理一次。

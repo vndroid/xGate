@@ -61,6 +61,15 @@ func TestValidateErrors(t *testing.T) {
 api: {listen: "0.0.0.0:7070"}
 forwards: [{listen_port: 35353, target_port: 8080}]`,
 		"no forwards": `db: /tmp/x.db`,
+		"zero ipv4 min prefix": `
+min_prefix_len: {ipv4: 0}
+forwards: [{listen_port: 35353, target_port: 8080}]`,
+		"zero ipv6 min prefix": `
+min_prefix_len: {ipv6: 0}
+forwards: [{listen_port: 35353, target_port: 8080}]`,
+		"ipv4 min prefix too long": `
+min_prefix_len: {ipv4: 33}
+forwards: [{listen_port: 35353, target_port: 8080}]`,
 		"zero max entries": `
 limits: {max_entries: 0}
 forwards: [{listen_port: 35353, target_port: 8080}]`,
