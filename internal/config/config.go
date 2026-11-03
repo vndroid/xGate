@@ -22,6 +22,7 @@ type Config struct {
 	SS                SS            `yaml:"ss"`
 	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
 	MinPrefixLen      MinPrefixLen  `yaml:"min_prefix_len"`
+	Limits            Limits        `yaml:"limits"`
 	Forwards          []Forward     `yaml:"forwards"`
 }
 
@@ -54,6 +55,14 @@ type SS struct {
 }
 
 // MinPrefixLen 规定不加 force 时允许的最短前缀，用来挡住 0.0.0.0/0 这类过宽网段。
+// Limits 限制控制面的资源占用，防止 token 泄漏或脚本失控时拖垮控制面。
+type Limits struct {
+	// MaxEntries 是白名单有效条目的上限；达到上限后不能再新增，但可以更新已有条目。
+	MaxEntries int `yaml:"max_entries"`
+	// AuditRetention 是审计记录的保留时长，0 表示永久保留。
+	AuditRetention time.Duration `yaml:"audit_retention"`
+}
+
 type MinPrefixLen struct {
 	IPv4 int `yaml:"ipv4"`
 	IPv6 int `yaml:"ipv6"`
@@ -80,6 +89,7 @@ func Default() Config {
 		SS:                SS{Binary: "ss"},
 		ReconcileInterval: 30 * time.Second,
 		MinPrefixLen:      MinPrefixLen{IPv4: 8, IPv6: 32},
+		Limits:            Limits{MaxEntries: 10000, AuditRetention: 90 * 24 * time.Hour},
 	}
 }
 
@@ -125,6 +135,12 @@ func (c *Config) Validate() error {
 	}
 	if c.MinPrefixLen.IPv4 < 0 || c.MinPrefixLen.IPv4 > 32 || c.MinPrefixLen.IPv6 < 0 || c.MinPrefixLen.IPv6 > 128 {
 		return errors.New("min_prefix_len out of range")
+	}
+	if c.Limits.MaxEntries < 1 {
+		return errors.New("limits.max_entries must be at least 1")
+	}
+	if c.Limits.AuditRetention < 0 {
+		return errors.New("limits.audit_retention must not be negative")
 	}
 	if err := c.API.validate(); err != nil {
 		return err

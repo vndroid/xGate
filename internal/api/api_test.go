@@ -25,12 +25,20 @@ import (
 )
 
 type fakeNFT struct {
-	mu   sync.Mutex
-	last string
-	err  error
+	mu      sync.Mutex
+	last    string
+	err     error
+	block   chan struct{} // 非 nil 时 Apply 会阻塞，直到它被关闭
+	entered chan struct{} // 非 nil 时 Apply 开始执行时会发送一个信号
 }
 
 func (f *fakeNFT) Apply(_ context.Context, s string) error {
+	if f.entered != nil {
+		f.entered <- struct{}{}
+	}
+	if f.block != nil {
+		<-f.block
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.last = s
@@ -346,5 +354,67 @@ func TestHealthzHidesSyncErrors(t *testing.T) {
 	_, out = e.do(t, "GET", "/v1/status", "", "Authorization", "Bearer s3cret")
 	if msg, _ := out["sync"].(map[string]any)["last_error"].(string); !strings.Contains(msg, "secret.nft") {
 		t.Errorf("status = %v, want last_error", out)
+	}
+}
+
+func TestMaxEntries(t *testing.T) {
+	e := setup(t, "")
+	e.srvHandler.MaxEntries = 2
+	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24"}`)
+	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.1.0/24"}`)
+	if code, out := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.2.0/24"}`); code != http.StatusConflict ||
+		!strings.Contains(out["error"].(string), "allowlist is full") {
+		t.Errorf("third entry: %d %v, want 409", code, out)
+	}
+	// 已有条目仍可更新；删除一条后可以再新增。
+	if code, _ := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24","comment":"x"}`); code != http.StatusOK {
+		t.Errorf("update at limit: %d, want 200", code)
+	}
+	e.do(t, "DELETE", "/v1/allowlist/10.0.1.0%2F24", "")
+	if code, _ := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.2.0/24"}`); code != http.StatusCreated {
+		t.Errorf("add after delete: %d, want 201", code)
+	}
+}
+
+func TestKillRegionLimit(t *testing.T) {
+	e := setup(t, "")
+	e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/16"}`)
+	// 300 个互不相邻的 /32 把 10.0.0.0/16 切成 300 多个区间。
+	for i := 0; i < 300; i++ {
+		e.do(t, "POST", "/v1/allowlist", fmt.Sprintf(`{"cidr":"10.0.%d.%d"}`, i/100, (i%100)*2+1))
+	}
+	code, out := e.do(t, "DELETE", "/v1/allowlist/10.0.0.0%2F16?kill=true", "")
+	if code != http.StatusBadRequest || !strings.Contains(out["error"].(string), "limit 256") {
+		t.Fatalf("delete with kill: %d %v, want 400", code, out)
+	}
+	if len(e.killer.calls) != 0 {
+		t.Errorf("no process should be started: %q", e.killer.calls)
+	}
+	// 被拒绝时不能删除条目；不带 kill 可以正常删除。
+	if code, _ := e.do(t, "DELETE", "/v1/allowlist/10.0.0.0%2F16", ""); code != http.StatusOK {
+		t.Errorf("delete without kill: %d, want 200 (entry must still exist)", code)
+	}
+}
+
+func TestWritesQueueLimit(t *testing.T) {
+	e := setup(t, "")
+	e.srvHandler.maxQueued = 1
+	e.nft.block, e.nft.entered = make(chan struct{}), make(chan struct{}, 1)
+
+	first := make(chan int)
+	go func() {
+		code, _ := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24"}`)
+		first <- code
+	}()
+	<-e.nft.entered // 第一个写请求正在同步，占住了唯一的名额
+	if code, out := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.1.0/24"}`); code != http.StatusTooManyRequests {
+		t.Errorf("second write: %d %v, want 429", code, out)
+	}
+	if code, _ := e.do(t, "GET", "/v1/allowlist", ""); code != http.StatusOK {
+		t.Errorf("reads must not be limited: %d", code)
+	}
+	close(e.nft.block)
+	if code := <-first; code != http.StatusCreated {
+		t.Errorf("first write: %d, want 201", code)
 	}
 }

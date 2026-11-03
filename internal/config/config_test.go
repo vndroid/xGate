@@ -30,6 +30,9 @@ forwards:
 	if f.Name != "forward0" || strings.Join(f.Protocols, ",") != "tcp,udp" || !f.Protected() {
 		t.Errorf("unexpected forward defaults: %+v", f)
 	}
+	if cfg.Limits.MaxEntries != 10000 || cfg.Limits.AuditRetention != 90*24*time.Hour {
+		t.Errorf("unexpected limits: %+v", cfg.Limits)
+	}
 	if cfg.ReconcileInterval != 30*time.Second || cfg.NFT.Table != "xgate" || cfg.API.Listen != "127.0.0.1:7070" {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
@@ -58,6 +61,12 @@ func TestValidateErrors(t *testing.T) {
 api: {listen: "0.0.0.0:7070"}
 forwards: [{listen_port: 35353, target_port: 8080}]`,
 		"no forwards": `db: /tmp/x.db`,
+		"zero max entries": `
+limits: {max_entries: 0}
+forwards: [{listen_port: 35353, target_port: 8080}]`,
+		"negative audit retention": `
+limits: {audit_retention: -1h}
+forwards: [{listen_port: 35353, target_port: 8080}]`,
 		"same port": `
 forwards: [{listen_port: 8080, target_port: 8080}]`,
 		"bad protocol": `

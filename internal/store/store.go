@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS audit (
 	cidr   TEXT NOT NULL,
 	detail TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);
 `
 
 func Open(path string) (*Store, error) {
@@ -211,6 +212,30 @@ func (s *Store) PurgeExpired(ctx context.Context, now time.Time) ([]Entry, error
 		}
 	}
 	return expired, tx.Commit()
+}
+
+// CountActive 返回在 now 时刻仍有效的记录数。
+func (s *Store) CountActive(ctx context.Context, now time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allowlist WHERE expires_at IS NULL OR expires_at > ?`, ms(now)).Scan(&n)
+	return n, err
+}
+
+// IsActive 判断 p 在 now 时刻是否是一条有效记录。
+func (s *Store) IsActive(ctx context.Context, p netip.Prefix, now time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM allowlist WHERE cidr = ? AND (expires_at IS NULL OR expires_at > ?)`,
+		p.String(), ms(now)).Scan(&n)
+	return n > 0, err
+}
+
+// PruneAudit 删除早于 before 的审计记录，返回删除条数。
+func (s *Store) PruneAudit(ctx context.Context, before time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM audit WHERE ts < ?`, ms(before))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // NextExpiry 返回最早的过期时间；没有带 TTL 的记录时 ok=false。

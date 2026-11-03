@@ -32,6 +32,9 @@ type Reconciler struct {
 
 	// Now 返回当前时间（UTC），可在测试中替换。
 	Now func() time.Time
+	// AuditRetention 是审计记录的保留时长，0 表示永久保留。
+	AuditRetention time.Duration
+	lastPrune      time.Time // 只在 Run 的 goroutine 中访问
 
 	mu     sync.Mutex // 串行化同步，保证内核状态按顺序收敛
 	status Status
@@ -114,6 +117,21 @@ func (r *Reconciler) Run(ctx context.Context) {
 	}
 }
 
+// pruneAudit 删除超过保留期的审计记录，最多每小时执行一次。
+func (r *Reconciler) pruneAudit(ctx context.Context) {
+	now := r.Now()
+	if r.AuditRetention <= 0 || now.Sub(r.lastPrune) < time.Hour {
+		return
+	}
+	r.lastPrune = now
+	n, err := r.store.PruneAudit(ctx, now.Add(-r.AuditRetention))
+	if err != nil {
+		r.log.Error("prune audit records", "err", err)
+	} else if n > 0 {
+		r.log.Info("pruned audit records", "count", n, "retention", r.AuditRetention.String())
+	}
+}
+
 // tick 清理过期记录并同步，返回距下一次运行的等待时间。
 func (r *Reconciler) tick(ctx context.Context) time.Duration {
 	purged, err := r.store.PurgeExpired(ctx, r.Now())
@@ -126,6 +144,7 @@ func (r *Reconciler) tick(ctx context.Context) time.Duration {
 	if _, err := r.Sync(ctx); err != nil {
 		r.log.Error("sync to kernel failed", "err", err)
 	}
+	r.pruneAudit(ctx)
 	wait := r.interval
 	if next, ok, err := r.store.NextExpiry(ctx); err == nil && ok {
 		if d := next.Sub(r.Now()); d < wait {

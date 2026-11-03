@@ -116,3 +116,25 @@ func mustUpsert(t *testing.T, st *store.Store, e store.Entry, actor string, now 
 		t.Fatal(err)
 	}
 }
+
+func TestAuditPrunedHourly(t *testing.T) {
+	ctx := context.Background()
+	r, st, _ := setup(t)
+	start := time.UnixMilli(1_700_000_000_000).UTC()
+	mustUpsert(t, st, store.Entry{Prefix: netip.MustParsePrefix("10.0.0.0/24")}, "t", start)
+	now := start.Add(10 * 24 * time.Hour)
+	r.Now = func() time.Time { return now }
+	r.AuditRetention = 7 * 24 * time.Hour
+
+	r.pruneAudit(ctx)
+	if recs, _ := st.Audit(ctx, 10); len(recs) != 0 {
+		t.Fatalf("audit older than retention not pruned: %+v", recs)
+	}
+	// 一小时内不会重复修剪。
+	mustUpsert(t, st, store.Entry{Prefix: netip.MustParsePrefix("10.0.1.0/24")}, "t", start)
+	now = now.Add(30 * time.Minute)
+	r.pruneAudit(ctx)
+	if recs, _ := st.Audit(ctx, 10); len(recs) != 1 {
+		t.Errorf("pruned again within an hour: %+v", recs)
+	}
+}

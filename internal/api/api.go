@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/vndroid/xGate/internal/cidr"
@@ -33,15 +34,30 @@ type Server struct {
 	Token     string
 	Log       *slog.Logger
 	Now       func() time.Time
+	// MaxEntries 是白名单有效条目的上限，0 表示不限制。
+	MaxEntries int
+
+	writeSem    chan struct{} // 串行执行写操作
+	writeQueued atomic.Int32  // 正在执行和排队中的写请求数
+	maxQueued   int32         // 超过后返回 429，0 表示 defaultMaxQueuedWrites
 }
+
+const (
+	// defaultMaxQueuedWrites 是同时在执行和排队的写请求上限。
+	defaultMaxQueuedWrites = 16
+	// maxKillRegions 限制 kill 时需要断开的地址区间数。每个区间都要为每条转发、
+	// 每种协议各启动一次 ss / conntrack 子进程。
+	maxKillRegions = 256
+)
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.Handle("GET /v1/allowlist", s.auth(s.list))
-	mux.Handle("POST /v1/allowlist", s.auth(s.add))
-	mux.Handle("DELETE /v1/allowlist/{cidr...}", s.auth(s.remove))
-	mux.Handle("POST /v1/allowlist:sync", s.auth(s.sync))
+	s.writeSem = make(chan struct{}, 1)
+	mux.Handle("POST /v1/allowlist", s.auth(s.serialized(s.add)))
+	mux.Handle("DELETE /v1/allowlist/{cidr...}", s.auth(s.serialized(s.remove)))
+	mux.Handle("POST /v1/allowlist:sync", s.auth(s.serialized(s.sync)))
 	mux.Handle("GET /v1/audit", s.auth(s.audit))
 	mux.Handle("GET /v1/status", s.auth(s.status))
 
@@ -74,6 +90,31 @@ func (s *Server) auth(h http.HandlerFunc) http.Handler {
 		}
 		h(w, r)
 	})
+}
+
+// serialized 让写操作逐个执行：每次变更都会触发一次整表同步，串行执行既避免了
+// 无谓的并发同步，也让条目上限的检查不会被并发请求绕过。排队过多时返回 429。
+func (s *Server) serialized(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		limit := s.maxQueued
+		if limit <= 0 {
+			limit = defaultMaxQueuedWrites
+		}
+		if s.writeQueued.Add(1) > limit {
+			s.writeQueued.Add(-1)
+			writeErr(w, http.StatusTooManyRequests, "too many concurrent changes, retry later")
+			return
+		}
+		defer s.writeQueued.Add(-1)
+		select {
+		case s.writeSem <- struct{}{}:
+			defer func() { <-s.writeSem }()
+		case <-r.Context().Done():
+			writeErr(w, http.StatusServiceUnavailable, "request cancelled while waiting for other changes")
+			return
+		}
+		h(w, r)
+	}
 }
 
 // actor 标识审计日志中的操作者：可选的 X-Xgate-Actor 头 + 来源地址。
@@ -190,6 +231,22 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 		}
 		e.ExpiresAt = now.Add(ttl)
 	}
+	if s.MaxEntries > 0 {
+		exists, err := s.Store.IsActive(r.Context(), p, now)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		n, err := s.Store.CountActive(r.Context(), now)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !exists && n >= s.MaxEntries {
+			writeErr(w, http.StatusConflict, fmt.Sprintf("allowlist is full (%d entries, limits.max_entries); delete entries before adding new ones", n))
+			return
+		}
+	}
 	who := actor(r)
 	e, created, err := s.Store.Upsert(r.Context(), e, who, now)
 	if err != nil {
@@ -222,6 +279,20 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 	kill, _ := strconv.ParseBool(r.URL.Query().Get("kill"))
 	who := actor(r)
 	now := s.now()
+	// 删除之前先算出需要断开的地址区间，超过上限就直接拒绝，不做任何改动。
+	var regions []netip.Prefix
+	if kill {
+		if regions, err = s.killRegions(r.Context(), p, now); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(regions) > maxKillRegions {
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+				"kill would have to reset %d address ranges (limit %d) because other entries overlap %s; delete without kill, or remove the overlapping entries first",
+				len(regions), maxKillRegions, p))
+			return
+		}
+	}
 	old, ok, err := s.Store.Delete(r.Context(), p, who, fmt.Sprintf("kill=%t", kill), now)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -238,7 +309,7 @@ func (s *Server) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if kill {
-		res := s.killFlows(r.Context(), p, now)
+		res := s.killFlows(r.Context(), regions)
 		resp["reset_sockets"] = res.resetSockets
 		resp["killed_connections"] = res.conntrackEntries
 		if len(res.warnings) > 0 {
@@ -261,22 +332,27 @@ type killResult struct {
 	errs             []string // conntrack 清理失败
 }
 
-// killFlows 断开 p 中、且不再被其它白名单覆盖的地址上的已有连接：
+// killRegions 返回 p 中不被其它有效条目覆盖的地址区间，也就是删除 p 后需要断开连接的范围。
+func (s *Server) killRegions(ctx context.Context, p netip.Prefix, now time.Time) ([]netip.Prefix, error) {
+	active, err := s.Store.Active(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	var holes []netip.Prefix
+	for _, e := range active {
+		if e.Prefix != p {
+			holes = append(holes, e.Prefix)
+		}
+	}
+	return cidr.Subtract(p, holes), nil
+}
+
+// killFlows 断开 regions 中已有的连接：
 //  1. 销毁本机后端上的 TCP socket，两端立即收到 RST。此时 conntrack 里的 NAT
 //     映射还在，发给客户端的 RST 会被转换回监听端口，客户端才能识别。
 //  2. 再删除 conntrack 记录，覆盖 UDP 以及未能销毁的连接，使其后续报文不再被转发。
-func (s *Server) killFlows(ctx context.Context, p netip.Prefix, now time.Time) killResult {
+func (s *Server) killFlows(ctx context.Context, regions []netip.Prefix) killResult {
 	var res killResult
-	remaining, err := s.Store.Active(ctx, now)
-	if err != nil {
-		res.errs = append(res.errs, err.Error())
-		return res
-	}
-	holes := make([]netip.Prefix, len(remaining))
-	for i, e := range remaining {
-		holes[i] = e.Prefix
-	}
-	regions := cidr.Subtract(p, holes)
 
 	type target struct {
 		peer netip.Prefix

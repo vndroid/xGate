@@ -81,6 +81,7 @@ func build(cfg *config.Config, log *slog.Logger) (*deps, error) {
 	}
 	rs := nft.Ruleset{Table: cfg.NFT.Table, Forwards: cfg.Forwards}
 	rec := reconcile.New(st, nft.CmdExecutor{Binary: cfg.NFT.Binary}, rs, cfg.ReconcileInterval, log)
+	rec.AuditRetention = cfg.Limits.AuditRetention
 	return &deps{store: st, rec: rec}, nil
 }
 
@@ -132,14 +133,15 @@ func serve(args []string) error {
 	}
 	srv := &http.Server{
 		Handler: (&api.Server{
-			Store:     d.store,
-			Rec:       d.rec,
-			Killer:    conntrack.CmdKiller{Binary: cfg.Conntrack.Binary},
-			Sockets:   sockets.CmdDestroyer{Binary: cfg.SS.Binary},
-			Forwards:  cfg.Forwards,
-			MinPrefix: cfg.MinPrefixLen,
-			Token:     cfg.API.Token,
-			Log:       log,
+			Store:      d.store,
+			Rec:        d.rec,
+			Killer:     conntrack.CmdKiller{Binary: cfg.Conntrack.Binary},
+			Sockets:    sockets.CmdDestroyer{Binary: cfg.SS.Binary},
+			Forwards:   cfg.Forwards,
+			MinPrefix:  cfg.MinPrefixLen,
+			Token:      cfg.API.Token,
+			Log:        log,
+			MaxEntries: cfg.Limits.MaxEntries,
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

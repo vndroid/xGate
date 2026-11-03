@@ -87,3 +87,31 @@ func mustUpsert(t *testing.T, s *Store, e Entry, actor string, now time.Time) {
 		t.Fatal(err)
 	}
 }
+
+func TestCountAndPruneAudit(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	old := time.UnixMilli(1_700_000_000_000).UTC()
+	now := old.Add(48 * time.Hour)
+	mustUpsert(t, s, Entry{Prefix: netip.MustParsePrefix("10.0.0.0/24")}, "a", old)
+	mustUpsert(t, s, Entry{Prefix: netip.MustParsePrefix("10.0.1.0/24"), ExpiresAt: old.Add(time.Hour)}, "a", old)
+	mustUpsert(t, s, Entry{Prefix: netip.MustParsePrefix("10.0.2.0/24")}, "a", now)
+
+	if n, err := s.CountActive(ctx, now); err != nil || n != 2 {
+		t.Errorf("CountActive = %d %v, want 2 (one entry has expired)", n, err)
+	}
+	if ok, _ := s.IsActive(ctx, netip.MustParsePrefix("10.0.1.0/24"), now); ok {
+		t.Error("expired entry reported as active")
+	}
+	if ok, _ := s.IsActive(ctx, netip.MustParsePrefix("10.0.0.0/24"), now); !ok {
+		t.Error("permanent entry reported as inactive")
+	}
+
+	n, err := s.PruneAudit(ctx, now.Add(-24*time.Hour))
+	if err != nil || n != 2 {
+		t.Fatalf("PruneAudit = %d %v, want 2", n, err)
+	}
+	if recs, _ := s.Audit(ctx, 10); len(recs) != 1 || recs[0].CIDR != "10.0.2.0/24" {
+		t.Errorf("remaining audit = %+v", recs)
+	}
+}
