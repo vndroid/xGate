@@ -61,6 +61,8 @@ type Limits struct {
 	MaxEntries int `yaml:"max_entries"`
 	// AuditRetention 是审计记录的保留时长，0 表示永久保留。
 	AuditRetention time.Duration `yaml:"audit_retention"`
+	// MaxTTL 是新增条目时 ttl 的上限；需要更久的条目应不设 ttl（永久）。
+	MaxTTL time.Duration `yaml:"max_ttl"`
 }
 
 type MinPrefixLen struct {
@@ -89,7 +91,7 @@ func Default() Config {
 		SS:                SS{Binary: "ss"},
 		ReconcileInterval: 30 * time.Second,
 		MinPrefixLen:      MinPrefixLen{IPv4: 8, IPv6: 32},
-		Limits:            Limits{MaxEntries: 10000, AuditRetention: 90 * 24 * time.Hour},
+		Limits:            Limits{MaxEntries: 10000, AuditRetention: 90 * 24 * time.Hour, MaxTTL: 365 * 24 * time.Hour},
 	}
 }
 
@@ -149,6 +151,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.AuditRetention < 0 {
 		return errors.New("limits.audit_retention must not be negative")
+	}
+	if c.Limits.MaxTTL < time.Second {
+		return errors.New("limits.max_ttl must be at least 1s")
 	}
 	if err := c.API.validate(); err != nil {
 		return err

@@ -29,6 +29,7 @@ reconcile_interval: 30s
 limits:
   max_entries: 10000      # 白名单有效条目上限
   audit_retention: 2160h  # 审计记录保留 90 天，0 表示永久保留
+  max_ttl: 8760h          # ttl 上限 365 天；更久的条目请不设 ttl（永久）
 
 # 不带 "force": true 时允许的最短前缀
 min_prefix_len:

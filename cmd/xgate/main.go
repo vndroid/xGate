@@ -142,6 +142,7 @@ func serve(args []string) error {
 			Token:      cfg.API.Token,
 			Log:        log,
 			MaxEntries: cfg.Limits.MaxEntries,
+			MaxTTL:     cfg.Limits.MaxTTL,
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

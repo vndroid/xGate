@@ -30,7 +30,7 @@ forwards:
 	if f.Name != "forward0" || strings.Join(f.Protocols, ",") != "tcp,udp" || !f.Protected() {
 		t.Errorf("unexpected forward defaults: %+v", f)
 	}
-	if cfg.Limits.MaxEntries != 10000 || cfg.Limits.AuditRetention != 90*24*time.Hour {
+	if cfg.Limits.MaxEntries != 10000 || cfg.Limits.AuditRetention != 90*24*time.Hour || cfg.Limits.MaxTTL != 365*24*time.Hour {
 		t.Errorf("unexpected limits: %+v", cfg.Limits)
 	}
 	if cfg.ReconcileInterval != 30*time.Second || cfg.NFT.Table != "xgate" || cfg.API.Listen != "127.0.0.1:7070" {
@@ -69,6 +69,9 @@ min_prefix_len: {ipv6: 0}
 forwards: [{listen_port: 35353, target_port: 8080}]`,
 		"ipv4 min prefix too long": `
 min_prefix_len: {ipv4: 33}
+forwards: [{listen_port: 35353, target_port: 8080}]`,
+		"zero max ttl": `
+limits: {max_ttl: 0s}
 forwards: [{listen_port: 35353, target_port: 8080}]`,
 		"zero max entries": `
 limits: {max_entries: 0}

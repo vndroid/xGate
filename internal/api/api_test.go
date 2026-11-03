@@ -418,3 +418,58 @@ func TestWritesQueueLimit(t *testing.T) {
 		t.Errorf("first write: %d, want 201", code)
 	}
 }
+
+func TestParseTTL(t *testing.T) {
+	const day = 24 * time.Hour
+	limit := 365 * day
+	cases := []struct {
+		in      string
+		max     time.Duration
+		want    time.Duration
+		wantErr bool
+	}{
+		{in: "30m", max: limit, want: 30 * time.Minute},
+		{in: "7d", max: limit, want: 7 * day},
+		{in: "365d", max: limit, want: 365 * day},
+		{in: "8760h", max: limit, want: limit},
+		{in: "366d", max: limit, wantErr: true},
+		{in: "8761h", max: limit, wantErr: true},
+		{in: "106751d", max: limit, wantErr: true}, // 约 292 年
+		{in: "213504d", max: 0, wantErr: true},     // n*24h 溢出后绕回 1526s，曾被当作 25 分钟接受
+		{in: "213505d", max: 0, wantErr: true},
+		{in: "99999999999999999999d", max: 0, wantErr: true},
+		{in: "9999999999h", max: 0, wantErr: true},  // ParseDuration 自身的溢出
+		{in: "106751d", max: 0, want: 106751 * day}, // 不限制时，不溢出的值照常接受
+		{in: "0d", max: limit, wantErr: true},
+		{in: "-1d", max: limit, wantErr: true},
+		{in: "soon", max: limit, wantErr: true},
+	}
+	for _, c := range cases {
+		got, err := parseTTL(c.in, c.max)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseTTL(%q, %v) = %v, want error", c.in, c.max, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("parseTTL(%q, %v) = %v, %v; want %v", c.in, c.max, got, err, c.want)
+		}
+	}
+}
+
+func TestMaxTTL(t *testing.T) {
+	e := setup(t, "")
+	e.srvHandler.MaxTTL = 365 * 24 * time.Hour
+	if code, out := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24","ttl":"366d"}`); code != http.StatusBadRequest ||
+		!strings.Contains(out["error"].(string), "limits.max_ttl") {
+		t.Errorf("366d: %d %v, want 400", code, out)
+	}
+	if code, _ := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.0.0/24","ttl":"365d"}`); code != http.StatusCreated {
+		t.Errorf("365d: %d, want 201", code)
+	}
+	// 不设 ttl 的永久条目不受 max_ttl 限制。
+	if code, _ := e.do(t, "POST", "/v1/allowlist", `{"cidr":"10.0.1.0/24"}`); code != http.StatusCreated {
+		t.Errorf("permanent entry: %d, want 201", code)
+	}
+}

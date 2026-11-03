@@ -89,6 +89,7 @@ forwards:
 - `min_prefix_len`：不加 `force` 时允许的最短前缀，默认 IPv4 `/8`、IPv6 `/32`；取值范围分别为 1–32 和 1–128，所以 `/0` 总是需要 `force`。
 - `db`：SQLite 路径，默认 `/var/lib/xgate/xgate.db`。
 - `limits.max_entries`：白名单有效条目的上限，默认 `10000`。达到上限后新增会返回 409，已有条目仍可更新。
+- `limits.max_ttl`：新增条目时 `ttl` 的上限，默认 `8760h`（365 天），超过返回 400；需要更久的条目请不设 `ttl`（永久）。
 - `limits.audit_retention`：审计记录保留时长，默认 `2160h`（90 天），`0` 表示永久保留。超期记录每小时清理一次。
 
 ## API
@@ -143,7 +144,7 @@ curl -s localhost:7070/v1/allowlist -H 'X-Xgate-Actor: kane' \
 | --- | --- |
 | `cidr` | 必填。网段或单个 IP（视为 `/32`、`/128`）；主机位会被清零，`198.51.100.7/24` 存为 `198.51.100.0/24`；IPv4-mapped IPv6 会转成 IPv4 |
 | `comment` | 可选，最长 256 字节 |
-| `ttl` | 可选，不填表示永久。支持 `30m`、`24h`、`7d` 等，至少 `1s` |
+| `ttl` | 可选，不填表示永久。支持 `30m`、`24h`、`7d` 等，至少 `1s`，最长 `limits.max_ttl`（默认 365 天） |
 | `force` | 可选。比 `min_prefix_len` 更宽的网段（如 `0.0.0.0/0`）需要设为 `true` |
 
 已存在的网段会被更新（comment、ttl），返回 200；新增返回 201：

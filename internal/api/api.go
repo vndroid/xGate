@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -36,6 +37,8 @@ type Server struct {
 	Now       func() time.Time
 	// MaxEntries 是白名单有效条目的上限，0 表示不限制。
 	MaxEntries int
+	// MaxTTL 是 ttl 的上限，0 表示不限制。
+	MaxTTL time.Duration
 
 	writeSem    chan struct{} // 串行执行写操作
 	writeQueued atomic.Int32  // 正在执行和排队中的写请求数
@@ -224,7 +227,7 @@ func (s *Server) add(w http.ResponseWriter, r *http.Request) {
 	now := s.now()
 	e := store.Entry{Prefix: p, Comment: req.Comment}
 	if req.TTL != "" {
-		ttl, err := parseTTL(req.TTL)
+		ttl, err := parseTTL(req.TTL, s.MaxTTL)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -439,23 +442,33 @@ func (s *Server) minBits(p netip.Prefix) int {
 	return s.MinPrefix.IPv6
 }
 
-// parseTTL 在 time.ParseDuration 的基础上额外支持 "7d" 这种按天的写法。
-func parseTTL(s string) (time.Duration, error) {
+// parseTTL 在 time.ParseDuration 的基础上额外支持 "7d" 这种按天的写法，
+// 并限制 ttl 不超过 maxTTL（0 表示不限制）。
+func parseTTL(s string, maxTTL time.Duration) (time.Duration, error) {
+	const day = 24 * time.Hour
+	tooLong := fmt.Errorf("ttl %q is longer than the limit %s (limits.max_ttl); omit ttl for a permanent entry", s, maxTTL)
 	var d time.Duration
-	var err error
 	if days, ok := strings.CutSuffix(s, "d"); ok {
-		var n int
-		if n, err = strconv.Atoi(days); err == nil {
-			d = time.Duration(n) * 24 * time.Hour
+		n, err := strconv.ParseInt(days, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid ttl %q", s)
 		}
+		// 先按天数比较再相乘，避免 n*24h 溢出 int64 后绕回成一个很小的正数。
+		if n > int64(math.MaxInt64/day) || (maxTTL > 0 && n > int64(maxTTL/day)) {
+			return 0, tooLong
+		}
+		d = time.Duration(n) * day
 	} else {
-		d, err = time.ParseDuration(s)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("invalid ttl %q", s)
+		var err error
+		if d, err = time.ParseDuration(s); err != nil { // 溢出时 ParseDuration 会返回错误
+			return 0, fmt.Errorf("invalid ttl %q", s)
+		}
 	}
 	if d < time.Second {
 		return 0, errors.New("ttl must be at least 1s")
+	}
+	if maxTTL > 0 && d > maxTTL {
+		return 0, tooLong
 	}
 	return d, nil
 }
