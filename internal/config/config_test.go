@@ -92,6 +92,27 @@ forwards: [{listen_port: 35353, target_port: 8080, typo: 1}]`,
 	}
 }
 
+func TestForwardNames(t *testing.T) {
+	for name, ok := range map[string]bool{
+		"default":               true,
+		"my-ssh.v2":             true,
+		"2222_ssh":              true,
+		`a"b`:                   false,
+		`a\`:                    false,
+		"café":                  false,
+		"a\x00b":                false,
+		"-leading-dash":         false,
+		strings.Repeat("x", 64): true,
+		strings.Repeat("x", 65): false,
+	} {
+		c := Default()
+		c.Forwards = []Forward{{Name: name, ListenPort: 35353, TargetPort: 8080}}
+		if err := c.Validate(); (err == nil) != ok {
+			t.Errorf("name %q: err = %v, want ok=%v", name, err, ok)
+		}
+	}
+}
+
 func TestListenAcceptsUnixAndLoopback(t *testing.T) {
 	for _, l := range []string{"unix:/run/xgate/api.sock", "[::1]:7070", "localhost:7070"} {
 		c := Default()

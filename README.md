@@ -68,7 +68,7 @@ forwards:
 
 | 字段 | 说明 |
 | --- | --- |
-| `name` | 规则名，不能重复；省略时自动生成 `forward0`、`forward1`… |
+| `name` | 规则名，不能重复；只能包含字母、数字、`_`、`.`、`-`，以字母或数字开头，最长 64 个字符（会写进 nft 规则的 comment）；省略时自动生成 `forward0`、`forward1`… |
 | `listen_port` | 客户端连接的端口。不在白名单内的来源发到这个端口的流量会被丢弃 |
 | `target_port` | 本机后端端口。不能与 `listen_port` 相同 |
 | `protocols` | `tcp`、`udp` 或两者都选 |

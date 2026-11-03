@@ -123,6 +123,10 @@ func Load(path string) (*Config, error) {
 
 var identRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,31}$`)
 
+// forwardNameRe 限制 forward 名称的字符集。名称会写进 nft 规则的 comment，nft 的
+// 字符串不支持转义，引号等字符会让整个同步事务失败。
+var forwardNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
 func (c *Config) Validate() error {
 	if !identRe.MatchString(c.NFT.Table) {
 		return fmt.Errorf("nft.table %q must match %s", c.NFT.Table, identRe)
@@ -154,6 +158,9 @@ func (c *Config) Validate() error {
 		f := &c.Forwards[i]
 		if f.Name == "" {
 			f.Name = fmt.Sprintf("forward%d", i)
+		}
+		if !forwardNameRe.MatchString(f.Name) {
+			return fmt.Errorf("forward name %q must match %s", f.Name, forwardNameRe)
 		}
 		if names[f.Name] {
 			return fmt.Errorf("duplicate forward name %q", f.Name)
