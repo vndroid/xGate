@@ -1,0 +1,3 @@
+# systemd-sysusers 配置：创建运行 xgate 控制面的系统用户和同名用户组。
+# 安装到 /usr/lib/sysusers.d/xgate.conf 后执行 systemd-sysusers。
+u xgate - "xGate control plane" /var/lib/xgate

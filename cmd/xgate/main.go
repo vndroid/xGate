@@ -192,7 +192,10 @@ func listen(c config.API) (net.Listener, error) {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
 		}
+		// 先设置 umask，socket 文件一创建就是 0660，不存在按默认 umask 可访问的窗口。
+		old := syscall.Umask(0o117)
 		ln, err := net.Listen("unix", path)
+		syscall.Umask(old)
 		if err != nil {
 			return nil, err
 		}

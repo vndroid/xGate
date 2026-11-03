@@ -37,8 +37,10 @@
 
 ```bash
 CGO_ENABLED=0 go build -ldflags "-X main.version=$(git describe --always)" -o xgate ./cmd/xgate
+install -m 0644 deploy/xgate.sysusers /usr/lib/sysusers.d/xgate.conf
+systemd-sysusers                                   # 创建系统用户 xgate
 install -m 0755 xgate /usr/local/bin/xgate
-install -D -m 0640 deploy/config.example.yaml /etc/xgate/config.yaml
+install -D -m 0640 -g xgate deploy/config.example.yaml /etc/xgate/config.yaml
 install -m 0644 deploy/xgate.service /etc/systemd/system/xgate.service
 systemctl daemon-reload && systemctl enable --now xgate
 ```

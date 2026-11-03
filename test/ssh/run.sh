@@ -109,6 +109,8 @@ last_line() { tail -n1 "$WORK/$1.out"; }
 loop_cmd() { echo "i=0; while [ \$i -lt $1 ]; do i=\$((i+1)); echo \$i; sleep $2; done; echo done"; }
 
 # --- 基本连接 ---------------------------------------------------------------
+# 按 deploy/xgate.service 部署时控制面以非 root 用户运行，nft、conntrack、ss 都在这个用户下执行。
+check "xgate runs as non-root user xgate" "xgate" docker exec $SRV ps -o user= -C xgate
 check "not allowlisted: ssh via 2222 blocked" "" ssh_to $CLI 2222 -- echo ok
 api POST /v1/allowlist "{\"cidr\":\"$CLI_IP\",\"comment\":\"ssh client\"}" >/dev/null
 check "allowlisted: ssh via 2222 works" "ok" ssh_to $CLI 2222 -- echo ok

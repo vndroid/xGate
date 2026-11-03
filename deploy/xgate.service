@@ -13,6 +13,12 @@ ExecStart=/usr/local/bin/xgate serve -config /etc/xgate/config.yaml
 Restart=on-failure
 RestartSec=2s
 
+# 以非 root 用户运行（由 deploy/xgate.sysusers 创建），只授予管理网络所需的
+# CAP_NET_ADMIN；nft、conntrack、ss 子进程会继承这项能力。xgate 组的成员可以
+# 读取配置并访问 unix socket 形式的 API。
+User=xgate
+Group=xgate
+# 已有的 /var/lib/xgate 若属于其它用户，systemd 启动时会递归改为 xgate 所有。
 StateDirectory=xgate
 StateDirectoryMode=0750
 RuntimeDirectory=xgate
