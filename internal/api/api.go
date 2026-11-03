@@ -43,7 +43,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /v1/allowlist/{cidr...}", s.auth(s.remove))
 	mux.Handle("POST /v1/allowlist:sync", s.auth(s.sync))
 	mux.Handle("GET /v1/audit", s.auth(s.audit))
-	return mux
+
+	// 拒绝浏览器发起的跨站写请求（CSRF）。例如通过 ssh -L 把 API 映射到本机后，
+	// 任意网页都能用 text/plain 的 simple request 向 localhost 发 POST，而回环监听
+	// 默认不要求 token。curl 等非浏览器客户端不带 Origin / Sec-Fetch-Site，不受影响。
+	cop := http.NewCrossOriginProtection()
+	cop.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeErr(w, http.StatusForbidden, "cross-origin browser request rejected")
+	}))
+	return cop.Handler(mux)
 }
 
 // now 返回当前时间。API 输出的所有时间统一为 UTC。

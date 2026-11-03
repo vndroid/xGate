@@ -295,3 +295,32 @@ func TestTimesAreUTC(t *testing.T) {
 		t.Errorf("expires_at = %v, want 2026-10-02T13:00:00Z", entry["expires_at"])
 	}
 }
+
+func TestCrossOriginBrowserRequestsRejected(t *testing.T) {
+	e := setup(t, "")
+	cases := []struct {
+		name, method, path string
+		hdr                []string
+		want               int
+	}{
+		{"cross-site simple POST", "POST", "/v1/allowlist",
+			[]string{"Content-Type", "text/plain", "Origin", "https://evil.example", "Sec-Fetch-Site", "cross-site"}, http.StatusForbidden},
+		{"Origin mismatch without Sec-Fetch-Site", "POST", "/v1/allowlist",
+			[]string{"Origin", "https://evil.example"}, http.StatusForbidden},
+		{"cross-site sync", "POST", "/v1/allowlist:sync", []string{"Sec-Fetch-Site", "cross-site"}, http.StatusForbidden},
+		{"cross-site delete", "DELETE", "/v1/allowlist/10.0.0.0%2F24", []string{"Sec-Fetch-Site", "cross-site"}, http.StatusForbidden},
+		{"non-browser client (curl)", "POST", "/v1/allowlist", nil, http.StatusCreated},
+		{"same-origin browser", "POST", "/v1/allowlist", []string{"Sec-Fetch-Site", "same-origin"}, http.StatusOK},
+		{"cross-site GET is safe", "GET", "/v1/allowlist", []string{"Sec-Fetch-Site", "cross-site"}, http.StatusOK},
+	}
+	for _, c := range cases {
+		code, out := e.do(t, c.method, c.path, `{"cidr":"10.0.0.0/24"}`, c.hdr...)
+		if code != c.want {
+			t.Errorf("%s: got %d %v, want %d", c.name, code, out, c.want)
+		}
+	}
+	// 被拒绝的请求不能写入任何内容：只剩 curl 那次新增。
+	if _, out := e.do(t, "GET", "/v1/audit", ""); len(out["records"].([]any)) != 2 {
+		t.Errorf("audit = %v, want only the curl add and the same-origin update", out)
+	}
+}
