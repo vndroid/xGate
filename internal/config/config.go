@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/netip"
 	"os"
@@ -119,7 +120,7 @@ func Default() Config {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, FileError("config", err)
 	}
 	cfg := Default()
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
@@ -133,7 +134,7 @@ func Load(path string) (*Config, error) {
 		}
 		b, err := os.ReadFile(cfg.API.TokenFile)
 		if err != nil {
-			return nil, fmt.Errorf("read api.token_file: %w", err)
+			return nil, FileError("api.token_file", err)
 		}
 		cfg.API.Token = strings.TrimSpace(string(b))
 	}
@@ -141,6 +142,15 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// FileError 包装读取配置引用的文件时的错误。systemd 下控制面以 xgate 用户运行，
+// 权限不足通常是沿用了只有 root 可读的文件，这里直接给出修复方法。
+func FileError(field string, err error) error {
+	if errors.Is(err, fs.ErrPermission) {
+		return fmt.Errorf("read %s: %w (the service runs as user xgate: make the file readable by it and its parent directories searchable, e.g. chgrp xgate FILE && chmod 0640 FILE)", field, err)
+	}
+	return fmt.Errorf("read %s: %w", field, err)
 }
 
 var identRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,31}$`)

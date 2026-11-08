@@ -47,6 +47,15 @@ systemctl daemon-reload && systemctl enable --now xgate
 
 `xgate render -config /etc/xgate/config.yaml` 打印当前会写入内核的完整 nft 事务。
 
+控制面以 `xgate` 用户运行，所以配置文件以及其中引用的 `token_file`、`tls.cert`、`tls.key`、`tls.client_ca` 都必须对它可读，所在目录也要可进入：
+
+```bash
+chgrp xgate /etc/xgate/token /etc/xgate/server.key
+chmod 0640 /etc/xgate/token /etc/xgate/server.key
+```
+
+从以 root 运行的旧版本（v0.0.4 及更早）升级时，要先创建用户并调整这些文件的权限，否则控制面会因为读不到文件而启动失败。这种情况下内核里已有的规则和白名单不受影响，转发不会中断，但 API 和定期对账在修复之前都不可用。
+
 ## 配置
 
 完整示例见 [deploy/config.example.yaml](deploy/config.example.yaml)，默认路径是 `/etc/xgate/config.yaml`。

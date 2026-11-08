@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,5 +157,16 @@ func TestListenAcceptsUnixAndLoopback(t *testing.T) {
 		if err := c.Validate(); err != nil {
 			t.Errorf("%s: %v", l, err)
 		}
+	}
+}
+
+func TestFileErrorHintsOnPermission(t *testing.T) {
+	denied := &fs.PathError{Op: "open", Path: "/etc/xgate/token", Err: fs.ErrPermission}
+	if err := FileError("api.token_file", denied); !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "chgrp xgate") {
+		t.Errorf("permission error = %v, want a fix hint", err)
+	}
+	missing := &fs.PathError{Op: "open", Path: "/etc/xgate/token", Err: fs.ErrNotExist}
+	if err := FileError("api.token_file", missing); strings.Contains(err.Error(), "chgrp") {
+		t.Errorf("missing file error should not suggest chgrp: %v", err)
 	}
 }

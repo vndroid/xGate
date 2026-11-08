@@ -125,6 +125,14 @@ func serve(args []string) error {
 	}
 	log.Info("initial sync done", "entries", st.Entries, "elements", st.Elements, "version", version)
 
+	// 在启动后台循环之前加载证书，配置有问题就干净地退出；此时规则和白名单已经恢复到内核。
+	var tlsCfg *tls.Config
+	if cfg.API.TLS.Cert != "" {
+		if tlsCfg, err = tlsConfig(cfg.API.TLS); err != nil {
+			return err
+		}
+	}
+
 	go d.rec.Run(ctx)
 
 	ln, err := listen(cfg.API)
@@ -149,17 +157,13 @@ func serve(args []string) error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	if cfg.API.TLS.Cert != "" {
-		if srv.TLSConfig, err = tlsConfig(cfg.API.TLS); err != nil {
-			return err
-		}
-	}
+	srv.TLSConfig = tlsCfg
 
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("api listening", "addr", cfg.API.Listen, "tls", cfg.API.TLS.Cert != "", "mtls", cfg.API.TLS.ClientCA != "")
 		if cfg.API.TLS.Cert != "" {
-			errc <- srv.ServeTLS(ln, cfg.API.TLS.Cert, cfg.API.TLS.Key)
+			errc <- srv.ServeTLS(ln, "", "") // 证书已由 tlsConfig 加载
 		} else {
 			errc <- srv.Serve(ln)
 		}
@@ -210,11 +214,15 @@ func listen(c config.API) (net.Listener, error) {
 }
 
 func tlsConfig(c config.TLS) (*tls.Config, error) {
-	tc := &tls.Config{MinVersion: tls.VersionTLS12}
+	cert, err := tls.LoadX509KeyPair(c.Cert, c.Key)
+	if err != nil {
+		return nil, config.FileError("api.tls.cert/key", err)
+	}
+	tc := &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}
 	if c.ClientCA != "" {
 		pem, err := os.ReadFile(c.ClientCA)
 		if err != nil {
-			return nil, fmt.Errorf("read client_ca: %w", err)
+			return nil, config.FileError("api.tls.client_ca", err)
 		}
 		pool := x509.NewCertPool()
 		if !pool.AppendCertsFromPEM(pem) {

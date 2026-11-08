@@ -4,6 +4,7 @@ api:
   # "host:port" 或 "unix:/run/xgate/api.sock"。
   # 监听非回环地址时，必须设置 token / token_file 或 tls.client_ca（mTLS）。
   listen: 127.0.0.1:7070
+  # 下面引用的文件都必须对 xgate 用户可读（如 root:xgate 0640）
   # token_file: /etc/xgate/token
   # tls:
   #   cert: /etc/xgate/server.crt
