@@ -81,7 +81,7 @@ func build(cfg *config.Config, log *slog.Logger) (*deps, error) {
 	}
 	rs := nft.Ruleset{Table: cfg.NFT.Table, Forwards: cfg.Forwards}
 	rec := reconcile.New(st, nft.CmdExecutor{Binary: cfg.NFT.Binary}, rs, cfg.ReconcileInterval, log)
-	rec.AuditRetention = cfg.Limits.AuditRetention
+	rec.AuditRetention = time.Duration(cfg.Limits.AuditRetention)
 	return &deps{store: st, rec: rec}, nil
 }
 
@@ -142,7 +142,7 @@ func serve(args []string) error {
 			Token:      cfg.API.Token,
 			Log:        log,
 			MaxEntries: cfg.Limits.MaxEntries,
-			MaxTTL:     cfg.Limits.MaxTTL,
+			MaxTTL:     time.Duration(cfg.Limits.MaxTTL),
 		}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,

@@ -30,7 +30,7 @@ forwards:
 	if f.Name != "forward0" || strings.Join(f.Protocols, ",") != "tcp,udp" || !f.Protected() {
 		t.Errorf("unexpected forward defaults: %+v", f)
 	}
-	if cfg.Limits.MaxEntries != 10000 || cfg.Limits.AuditRetention != 90*24*time.Hour || cfg.Limits.MaxTTL != 365*24*time.Hour {
+	if cfg.Limits.MaxEntries != 10000 || cfg.Limits.AuditRetention != Duration(90*24*time.Hour) || cfg.Limits.MaxTTL != Duration(365*24*time.Hour) {
 		t.Errorf("unexpected limits: %+v", cfg.Limits)
 	}
 	if cfg.ReconcileInterval != 30*time.Second || cfg.NFT.Table != "xgate" || cfg.API.Listen != "127.0.0.1:7070" {
@@ -101,6 +101,28 @@ forwards: [{listen_port: 35353, target_port: 8080, typo: 1}]`,
 		if _, err := Load(write(t, content)); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+func TestLimitDurations(t *testing.T) {
+	const fwd = "\nforwards: [{listen_port: 35353, target_port: 8080}]\n"
+	for _, v := range []string{"0", "0s"} {
+		cfg, err := Load(write(t, "limits: {audit_retention: "+v+"}"+fwd))
+		if err != nil || cfg.Limits.AuditRetention != 0 {
+			t.Errorf("audit_retention %s: %+v, %v; want 0 (keep forever)", v, cfg, err)
+		}
+	}
+	cfg, err := Load(write(t, "limits: {audit_retention: 720h}"+fwd))
+	if err != nil || cfg.Limits.AuditRetention != Duration(720*time.Hour) {
+		t.Errorf("audit_retention 720h: %+v, %v", cfg, err)
+	}
+	// 不带单位的非零整数含义不明，必须报错。
+	if _, err := Load(write(t, "limits: {audit_retention: 5}"+fwd)); err == nil {
+		t.Error("audit_retention 5: expected error")
+	}
+	// max_ttl 没有"0 表示不限制"的语义，裸 0 要得到和 0s 一样清楚的校验错误。
+	if _, err := Load(write(t, "limits: {max_ttl: 0}"+fwd)); err == nil || !strings.Contains(err.Error(), "at least 1s") {
+		t.Errorf("max_ttl 0: %v, want the validation error", err)
 	}
 }
 

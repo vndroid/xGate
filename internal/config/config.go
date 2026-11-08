@@ -60,9 +60,29 @@ type Limits struct {
 	// MaxEntries 是白名单有效条目的上限；达到上限后不能再新增，但可以更新已有条目。
 	MaxEntries int `yaml:"max_entries"`
 	// AuditRetention 是审计记录的保留时长，0 表示永久保留。
-	AuditRetention time.Duration `yaml:"audit_retention"`
+	AuditRetention Duration `yaml:"audit_retention"`
 	// MaxTTL 是新增条目时 ttl 的上限；需要更久的条目应不设 ttl（永久）。
-	MaxTTL time.Duration `yaml:"max_ttl"`
+	MaxTTL Duration `yaml:"max_ttl"`
+}
+
+// Duration 是配置里可以写成 0 的时长。YAML 中裸的 0 是整数，yaml.v3 不能把整数
+// 解码成 time.Duration，这里单独放行 0；其它不带单位的整数含义不明，仍然报错。
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode && n.ShortTag() == "!!int" {
+		var i int64
+		if err := n.Decode(&i); err == nil && i == 0 {
+			*d = 0
+			return nil
+		}
+	}
+	var v time.Duration
+	if err := n.Decode(&v); err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
 }
 
 type MinPrefixLen struct {
@@ -91,7 +111,7 @@ func Default() Config {
 		SS:                SS{Binary: "ss"},
 		ReconcileInterval: 30 * time.Second,
 		MinPrefixLen:      MinPrefixLen{IPv4: 8, IPv6: 32},
-		Limits:            Limits{MaxEntries: 10000, AuditRetention: 90 * 24 * time.Hour, MaxTTL: 365 * 24 * time.Hour},
+		Limits:            Limits{MaxEntries: 10000, AuditRetention: Duration(90 * 24 * time.Hour), MaxTTL: Duration(365 * 24 * time.Hour)},
 	}
 }
 
@@ -152,7 +172,7 @@ func (c *Config) Validate() error {
 	if c.Limits.AuditRetention < 0 {
 		return errors.New("limits.audit_retention must not be negative")
 	}
-	if c.Limits.MaxTTL < time.Second {
+	if c.Limits.MaxTTL < Duration(time.Second) {
 		return errors.New("limits.max_ttl must be at least 1s")
 	}
 	if err := c.API.validate(); err != nil {
