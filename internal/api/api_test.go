@@ -473,3 +473,15 @@ func TestMaxTTL(t *testing.T) {
 		t.Errorf("permanent entry: %d, want 201", code)
 	}
 }
+
+func TestParseTTLMessages(t *testing.T) {
+	// 没有配置上限时，天数溢出不能被说成超过了 limits.max_ttl。
+	_, err := parseTTL("213504d", 0)
+	if err == nil || !strings.Contains(err.Error(), "too large") || strings.Contains(err.Error(), "max_ttl") {
+		t.Errorf("overflow without a limit: %v", err)
+	}
+	_, err = parseTTL("366d", 365*24*time.Hour)
+	if err == nil || !strings.Contains(err.Error(), "limits.max_ttl") || !strings.Contains(err.Error(), "8760h") {
+		t.Errorf("over the limit: %v", err)
+	}
+}

@@ -446,7 +446,9 @@ func (s *Server) minBits(p netip.Prefix) int {
 // 并限制 ttl 不超过 maxTTL（0 表示不限制）。
 func parseTTL(s string, maxTTL time.Duration) (time.Duration, error) {
 	const day = 24 * time.Hour
-	tooLong := fmt.Errorf("ttl %q is longer than the limit %s (limits.max_ttl); omit ttl for a permanent entry", s, maxTTL)
+	tooLong := func() error {
+		return fmt.Errorf("ttl %q is longer than the limit %s (limits.max_ttl); omit ttl for a permanent entry", s, maxTTL)
+	}
 	var d time.Duration
 	if days, ok := strings.CutSuffix(s, "d"); ok {
 		n, err := strconv.ParseInt(days, 10, 64)
@@ -454,8 +456,11 @@ func parseTTL(s string, maxTTL time.Duration) (time.Duration, error) {
 			return 0, fmt.Errorf("invalid ttl %q", s)
 		}
 		// 先按天数比较再相乘，避免 n*24h 溢出 int64 后绕回成一个很小的正数。
-		if n > int64(math.MaxInt64/day) || (maxTTL > 0 && n > int64(maxTTL/day)) {
-			return 0, tooLong
+		if n > int64(math.MaxInt64/day) {
+			return 0, fmt.Errorf("ttl %q is too large; omit ttl for a permanent entry", s)
+		}
+		if maxTTL > 0 && n > int64(maxTTL/day) {
+			return 0, tooLong()
 		}
 		d = time.Duration(n) * day
 	} else {
@@ -468,7 +473,7 @@ func parseTTL(s string, maxTTL time.Duration) (time.Duration, error) {
 		return 0, errors.New("ttl must be at least 1s")
 	}
 	if maxTTL > 0 && d > maxTTL {
-		return 0, tooLong
+		return 0, tooLong()
 	}
 	return d, nil
 }
